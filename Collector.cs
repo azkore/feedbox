@@ -23,6 +23,7 @@ internal sealed class PageResult
 internal sealed class Collector
 {
     private const int PageBudget = 8;
+    internal enum WalkResult { More, Complete, GapAtCutoff }
     private readonly Store store;
     private readonly string script;
     private readonly string articleBody;
@@ -59,9 +60,16 @@ internal sealed class Collector
             }
 
             var oldCursor = state.Cursor;
-            bool complete = Advance(state, result, first);
+            var walk = ProcessPage(state, result, first);
+            bool complete = walk == WalkResult.Complete;
             added += store.SavePage(state, result.posts, complete);
             if (complete) return Finish(state, result, added, state.Status, true);
+            if (walk == WalkResult.GapAtCutoff)
+            {
+                const string gap = "Possible gap: reached the collection start date before finding the previous batch.";
+                store.RecordGap(state, gap);
+                return Finish(state, result, added, gap);
+            }
             if (state.Cursor == "" || state.Cursor == oldCursor)
             {
                 const string gap = "Possible gap: Reddit did not provide another page before the previous batch was reached.";
@@ -88,16 +96,76 @@ internal sealed class Collector
             : "Added " + added.ToString(CultureInfo.CurrentCulture) + (added == 1 ? " new post." : " new posts.");
     }
 
-    internal static bool Advance(Source state, PageResult result, bool first)
+    internal static WalkResult ProcessPage(Source state, PageResult page, bool first)
+    {
+        if (state.InitialRemaining > 0)
+        {
+            // Count each ordinary listing entry once, even if Reddit changes a continuation and we restart at New.
+            var seen = new HashSet<string>(Split(state.InitialIds));
+            var accepted = new List<Post>();
+            foreach (var post in page.posts.Where(p => !p.pinned))
+            {
+                if (!seen.Contains(post.id))
+                {
+                    if (state.InitialRemaining == 0) break;
+                    seen.Add(post.id);
+                    state.InitialRemaining--;
+                    if (state.RedditFloor == "" || string.CompareOrdinal(post.created, state.RedditFloor) < 0) state.RedditFloor = post.created;
+                }
+                accepted.Add(post);
+            }
+            page.posts = accepted;
+            TrackPage(state, page);
+            if (state.InitialRemaining == 0 || state.Cursor == "")
+            {
+                state.Status = state.InitialRemaining == 0 ? "" : "Reddit's listing ended before the requested count.";
+                state.InitialRemaining = -1;
+                state.InitialIds = "";
+                return WalkResult.Complete;
+            }
+            state.InitialIds = string.Join(",", seen);
+            state.Status = "Initial import: " + state.InitialRemaining.ToString(CultureInfo.InvariantCulture) + " articles remaining.";
+            return WalkResult.More;
+        }
+
+        bool atCutoff = false;
+        if (state.RedditFloor != "")
+        {
+            // Stop on a whole page of older ordinary posts; a pin or one out-of-order card does not end the walk.
+            var ordinary = page.posts.Where(p => !p.pinned).ToList();
+            atCutoff = ordinary.Count > 0 && ordinary.All(p => p.publicationKnown && string.CompareOrdinal(p.created, state.RedditFloor) < 0);
+            page.posts = page.posts.Where(p => p.publicationKnown && string.CompareOrdinal(p.created, state.RedditFloor) >= 0).ToList();
+        }
+
+        bool initialByDate = state.InitialRemaining == 0;
+        bool complete = Advance(state, page, first);
+        if (initialByDate || (state.Anchors == "" && state.RedditFloor != ""))
+        {
+            if (!atCutoff && state.Cursor != "") return WalkResult.More;
+            state.InitialRemaining = -1;
+            state.Status = "";
+            return WalkResult.Complete;
+        }
+        if (complete) return WalkResult.Complete;
+        return atCutoff ? WalkResult.GapAtCutoff : WalkResult.More;
+    }
+
+    private static string[] TrackPage(Source state, PageResult result)
     {
         // Pinning moves posts outside the usual chronology, so pinned IDs are never checkpoints.
         var ids = result.posts.Where(p => !p.pinned).Select(p => p.id).Distinct().ToArray();
         var head = Split(state.Head).Concat(ids).Distinct().Take(12).ToArray();
         state.Head = string.Join(",", head);
         state.Cursor = result.next ?? "";
+        return ids;
+    }
+
+    internal static bool Advance(Source state, PageResult result, bool first)
+    {
+        var ids = TrackPage(state, result);
 
         // On first use, save a bounded starting batch instead of importing the whole subreddit.
-        if (state.Anchors == "" && head.Length > 0 && (!first || state.Cursor == ""))
+        if (state.RedditFloor == "" && state.Anchors == "" && state.Head != "" && (!first || state.Cursor == ""))
         {
             state.Status = "First check: only recent pages checked.";
             return true;
@@ -162,8 +230,8 @@ internal sealed class Collector
                 return new PageResult { problem = "Reddit returned an unexpected post card." };
             post.originalUrl = "https://www.reddit.com" + post.path;
             DateTimeOffset created;
-            if (!DateTimeOffset.TryParse(post.created, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out created))
-                created = DateTimeOffset.UtcNow;
+            post.publicationKnown = DateTimeOffset.TryParse(post.created, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out created);
+            if (!post.publicationKnown) created = DateTimeOffset.UtcNow;
             post.created = created.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
         }
         return result;

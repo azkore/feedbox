@@ -143,7 +143,23 @@ internal sealed class Inbox : IDisposable
                     var name = (form["name"] ?? "").Trim();
                     if (name.StartsWith("r/", StringComparison.OrdinalIgnoreCase)) name = name.Substring(2);
                     if (!Regex.IsMatch(name, @"^[A-Za-z0-9_]{1,21}$")) { Reply(context, 400, "Enter a subreddit name."); return; }
-                    store.AddSource(name, group);
+                    int initialCount = 100;
+                    string since = "";
+                    // Use separate field names from the reading filters carried by this form.
+                    if (form["reddit-start"] == "date")
+                    {
+                        ArticleFilter start;
+                        if (!ArticleFilter.TryCreate(form["reddit-since"], "", out start) || start.StartUtc == "")
+                        { Reply(context, 400, "Enter a valid collection start date."); return; }
+                        since = start.StartUtc;
+                    }
+                    else if (form["reddit-start"] == "count")
+                    {
+                        if (!int.TryParse(form["reddit-count"], NumberStyles.None, CultureInfo.InvariantCulture, out initialCount) || initialCount < 1 || initialCount > 1000)
+                        { Reply(context, 400, "Enter a starting count between 1 and 1,000."); return; }
+                    }
+                    else if (form["reddit-start"] != null) { Reply(context, 400, "Choose a count or start date."); return; }
+                    store.AddSource(name, group, initialCount, since);
                     break;
                 case "/rss-source":
                     Uri url;
@@ -458,7 +474,13 @@ internal sealed class Inbox : IDisposable
             .Append("<summary aria-label='Sidebar options' title='Sidebar options'>&#x22EF;</summary><div class=sidebar-tools-panel>")
             .Append("<label class=feed-sort-label hidden>Sort feeds<select class=feed-sort><option value=name>Grouped: by name</option><option value=group-count>Grouped: by count</option><option value=all-count>All feeds: by count</option></select></label>");
         html.Append("<details class=add-source><summary>Add source or group</summary>");
-        html.Append(Form("source", "<label>Subreddit <input name=name required maxlength=23 placeholder='r/rss'></label> <button>Add</button>", unread, source, oldest, group, dates));
+        html.Append(Form("source", "<label>Subreddit <input name=name required maxlength=23 placeholder='r/rss'></label>"
+            + "<fieldset class=reddit-start><legend>Start collection</legend>"
+            + "<label><input type=radio name=reddit-start value=count checked> Latest articles</label>"
+            + "<label class=reddit-start-count>Number of articles <input type=number name=reddit-count value=100></label>"
+            + "<label><input type=radio name=reddit-start value=date> From a date</label>"
+            + "<label class=reddit-start-date>Start date (inclusive) <input type=date name=reddit-since></label>"
+            + "</fieldset><button>Add</button>", unread, source, oldest, group, dates));
         html.Append(Form("rss-source", "<label>RSS or Atom URL <input type=url name=url required maxlength=2000 placeholder='https://example.com/feed/'></label> <button>Add feed</button>", unread, source, oldest, group, dates));
         html.Append(Form("import-opml", "<label>Import RSS/Atom subscriptions <input type=file name=opml-file accept='.opml,.xml,text/xml' required></label>"
             + "<label><input type=checkbox name=new-only value=1> Only collect new articles after import</label> <button>Import OPML</button>", unread, source, oldest, group, dates));

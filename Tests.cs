@@ -150,6 +150,7 @@ internal static class Tests
                 Expect(reopened.Groups().Count == 2 && reopened.IsPaused, "the grouped database reopens without rerunning old migrations");
             TestCleanup();
             TestArchiveBridge();
+            TestRedditCollectionStart();
             TestMarkFeedRead();
             TestRss();
             TestAppConfig();
@@ -483,6 +484,63 @@ internal static class Tests
                 Expect(Request(route, "POST", origin, "token=" + token + "&feed=rss&through=" + store.LatestArrival() + "&" + dates, out html) == 303
                     && store.Items(true, "rss").Select(row => row[0]).OrderBy(id => id).SequenceEqual(new[] { after.id, prior.id }),
                     "bulk read leaves articles outside the selected dates unread");
+            }
+        }
+        finally
+        {
+            foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix);
+        }
+    }
+
+    private static void TestRedditCollectionStart()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        var date = new DateTimeOffset(2026, 10, 13, 0, 0, 0, TimeSpan.Zero);
+        Func<string, int, Post> post = (id, hour) =>
+        {
+            var article = Post(id, id);
+            article.created = date.AddHours(hour).ToString("o");
+            article.publicationKnown = true;
+            return article;
+        };
+        Func<string, Post[], PageResult> page = (next, articles) => new PageResult { next = next, posts = articles.ToList() };
+        try
+        {
+            using (var store = new Store(path))
+            {
+                store.AddSource("default");
+                Expect(store.Sources().Single(s => s.Name == "default").InitialRemaining == 100, "new Reddit feeds default to 100 articles");
+                store.AddSource("count", initialCount: 3);
+                var state = store.Sources().Single(s => s.Name == "count");
+                var pin = post("pin", -400);
+                pin.pinned = true;
+                var first = page("/next", new[] { pin, post("one", 4), post("two", 3) });
+                Expect(Collector.ProcessPage(state, first, true) == Collector.WalkResult.More && store.SavePage(state, first.posts, false) == 2,
+                    "initial count ignores pins and saves progress with the page");
+                store.SetRead("t3_one", true);
+                store.ResetWalk("count", "Continuation expired.");
+                store.AddSource("count", initialCount: 200);
+            }
+            using (var store = new Store(path))
+            {
+                // A restarted walk can see the first page again without consuming the remaining slot twice.
+                var state = store.Sources().Single(s => s.Name == "count");
+                var replay = page("/next", new[] { post("one", 4), post("two", 3), post("three", 2), post("four", 1) });
+                Expect(state.InitialRemaining == 1 && Collector.ProcessPage(state, replay, true) == Collector.WalkResult.Complete
+                    && store.SavePage(state, replay.posts, true) == 1 && store.Count(false, "count") == 3 && store.Count(true, "count") == 2,
+                    "the selected count survives a restart, duplicate pages, and re-adding a feed");
+                state = store.Sources().Single(s => s.Name == "count");
+                var tooOld = page("/still-older", new[] { post("four", 1), post("five", -3) });
+                Expect(state.RedditFloor == post("three", 2).created && Collector.ProcessPage(state, tooOld, false) == Collector.WalkResult.GapAtCutoff
+                    && tooOld.posts.Count == 0, "catch-up cannot save or keep walking past the count boundary when anchors are missing");
+
+                var byDate = new Source { Anchors = "", Head = "", Cursor = "", Seen = "", RedditFloor = date.ToString("o"), InitialRemaining = 0 };
+                var mixed = page("/next", new[] { post("new", 1), post("old", -1), post("midnight", 0) });
+                Expect(Collector.ProcessPage(byDate, mixed, true) == Collector.WalkResult.More
+                    && mixed.posts.Select(p => p.id).SequenceEqual(new[] { "t3_new", "t3_midnight" }), "the starting date is inclusive and a single older post does not stop the walk");
+                var older = page("/still-older", new[] { post("older", -2), post("oldest", -3) });
+                Expect(Collector.ProcessPage(byDate, older, false) == Collector.WalkResult.Complete && older.posts.Count == 0
+                    && byDate.InitialRemaining == -1, "date-based collection stops when the listing reaches older history");
             }
         }
         finally

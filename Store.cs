@@ -29,6 +29,9 @@ internal sealed class Source
     public string FeedUrl;
     public string Name, Label, Anchors, Cursor, Head, Seen, Status;
     public bool ExtraPage;
+    public string RedditFloor = "", InitialIds = "";
+    // -1 means no initial import, 0 means date-based, and a positive value counts articles still owed.
+    public int InitialRemaining = -1;
 }
 
 internal sealed class FeedGroup
@@ -108,7 +111,7 @@ internal sealed class Store : IDisposable
         Check(sqlite3_busy_timeout(db, 5000));
         Run("PRAGMA journal_mode=WAL");
         var version = int.Parse(Query("PRAGMA user_version")[0][0], CultureInfo.InvariantCulture);
-        if (version < 0 || version > 14) throw new InvalidOperationException("Unsupported database version.");
+        if (version < 0 || version > 15) throw new InvalidOperationException("Unsupported database version.");
         Transaction(() =>
         {
             Run(@"CREATE TABLE IF NOT EXISTS sources (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1,
@@ -206,6 +209,14 @@ internal sealed class Store : IDisposable
                 Run("CREATE INDEX posts_marked ON posts(published,id) WHERE marked=1");
                 Run("PRAGMA user_version=14");
             }
+            if (version < 15)
+            {
+                // Keep the chosen boundary, and commit initial progress alongside each saved page.
+                Run("ALTER TABLE sources ADD COLUMN reddit_floor TEXT NOT NULL DEFAULT ''");
+                Run("ALTER TABLE sources ADD COLUMN reddit_initial_remaining INTEGER NOT NULL DEFAULT -1");
+                Run("ALTER TABLE sources ADD COLUMN reddit_initial_ids TEXT NOT NULL DEFAULT ''");
+                Run("PRAGMA user_version=15");
+            }
         });
     }
 
@@ -213,10 +224,11 @@ internal sealed class Store : IDisposable
     {
         // Revisit quiet feeds less often; unfinished walks remain eligible at the busy-feed interval.
         var due = dueOnly ? @" AND (last_attempt='' OR julianday(last_attempt) <= julianday('now') -
-            CASE WHEN cursor<>'' OR EXISTS (SELECT 1 FROM posts WHERE source=sources.name AND published >= strftime('%Y-%m-%dT%H:%M:%S','now','-1 day'))
+            CASE WHEN cursor<>'' OR reddit_initial_remaining>=0 OR EXISTS (SELECT 1 FROM posts WHERE source=sources.name AND published >= strftime('%Y-%m-%dT%H:%M:%S','now','-1 day'))
             THEN 2.0/24 ELSE 12.0/24 END)" : "";
-        return Query("SELECT name,anchors,cursor,head,seen,extra,status,label FROM sources WHERE kind='reddit'" + due + " ORDER BY last_attempt,name LIMIT ?", limit.ToString(CultureInfo.InvariantCulture))
-            .Select(r => new Source { Name = r[0], Anchors = r[1], Cursor = r[2], Head = r[3], Seen = r[4], ExtraPage = r[5] == "1", Status = r[6], Label = r[7] }).ToList();
+        return Query("SELECT name,anchors,cursor,head,seen,extra,status,label,reddit_floor,reddit_initial_remaining,reddit_initial_ids FROM sources WHERE kind='reddit'" + due + " ORDER BY last_attempt,name LIMIT ?", limit.ToString(CultureInfo.InvariantCulture))
+            .Select(r => new Source { Name = r[0], Anchors = r[1], Cursor = r[2], Head = r[3], Seen = r[4], ExtraPage = r[5] == "1", Status = r[6], Label = r[7],
+                RedditFloor = r[8], InitialRemaining = int.Parse(r[9], CultureInfo.InvariantCulture), InitialIds = r[10] }).ToList();
     }
 
     public void RecordAttempt(string name)
@@ -389,14 +401,16 @@ internal sealed class Store : IDisposable
         Run("UPDATE settings SET value=? WHERE key='collection_paused'", paused ? "1" : "0");
     }
 
-    public void AddSource(string name, int group = 0)
+    public void AddSource(string name, int group = 0, int initialCount = 100, string since = "")
     {
         // Preserve the supplied casing for Reddit requests while using the same local subscription key.
         var label = "r/" + name;
         name = name.ToLowerInvariant();
         Transaction(() =>
         {
-            InsertSource(name, label);
+            // Adding an existing feed to another group must not restart or change collection.
+            Run("INSERT OR IGNORE INTO sources(name,label,kind,reddit_floor,reddit_initial_remaining) VALUES (?,?,'reddit',?,?)",
+                name, label, since, (since == "" ? initialCount : 0).ToString(CultureInfo.InvariantCulture));
             Run("UPDATE sources SET label=? WHERE name=? AND label=? AND kind='reddit'", label, name, "r/" + name);
             if (group > 0) Run(@"INSERT OR IGNORE INTO feed_group_members(group_id,source,position)
                 SELECT id,?,COALESCE((SELECT MAX(position)+1 FROM feed_group_members WHERE group_id=feed_groups.id),0)
@@ -570,12 +584,13 @@ internal sealed class Store : IDisposable
         {
             added = SavePosts(scan.Name, posts);
             // Commit the page and the cursor together so a restart cannot skip unsaved posts.
+            var remaining = scan.InitialRemaining.ToString(CultureInfo.InvariantCulture);
             if (complete)
-                Run("UPDATE sources SET anchors=?,cursor='',head='',seen='',extra=0,status=? WHERE name=?",
-                    scan.Head, scan.Status, scan.Name);
+                Run("UPDATE sources SET anchors=?,cursor='',head='',seen='',extra=0,status=?,reddit_floor=?,reddit_initial_remaining=?,reddit_initial_ids=? WHERE name=?",
+                     scan.Head, scan.Status, scan.RedditFloor, remaining, scan.InitialIds, scan.Name);
             else
-                Run("UPDATE sources SET cursor=?,head=?,seen=?,extra=?,status=? WHERE name=?",
-                    scan.Cursor, scan.Head, scan.Seen, scan.ExtraPage ? "1" : "0", scan.Status, scan.Name);
+                Run("UPDATE sources SET cursor=?,head=?,seen=?,extra=?,status=?,reddit_floor=?,reddit_initial_remaining=?,reddit_initial_ids=? WHERE name=?",
+                     scan.Cursor, scan.Head, scan.Seen, scan.ExtraPage ? "1" : "0", scan.Status, scan.RedditFloor, remaining, scan.InitialIds, scan.Name);
         });
         return added;
     }
