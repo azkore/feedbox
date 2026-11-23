@@ -206,13 +206,14 @@
         status = main.querySelector('#key-status');
         header.querySelector('.check-status').open = statusOpen;
         selected = null;
+        displayedUrl = url;
+        applyFeedSort();
         restoreGroups();
         updateMoreFeeds();
         nav.scrollTop = sidebarScroll;
         revealCurrentFeed();
         showCheck();
 
-        displayedUrl = url;
         if (historyMode === 'push' && url !== location.href) history.pushState(null, '', url);
         if (focus) {
             const heading = header.querySelector('h1');
@@ -313,7 +314,7 @@
         else if (action === 'shortcut') shortcut.elements.open.value = link.dataset.openDiscussion === '1' ? 'discussion' : 'original';
         else {
             // Include hidden feed rows: unread filtering does not change membership.
-            const groups = new Set([...nav.querySelectorAll('a.feed[data-feed]')].filter(a => a.dataset.feed === link.dataset.feed).map(a => a.dataset.group));
+            const groups = new Set([...nav.querySelectorAll('.group-members a.feed[data-feed]')].filter(a => a.dataset.feed === link.dataset.feed).map(a => a.dataset.group));
             for (const input of reorganize.querySelectorAll('[name=membership]')) input.checked = groups.has(input.value);
         }
         menuButton.focus({ preventScroll: true });
@@ -525,10 +526,84 @@
     }
     restoreGroups();
 
+    const feedSort = document.querySelector('.feed-sort');
+    const feedSortKey = 'feed-inbox.feed-sort';
+    const originalFeedOrder = new WeakMap();
+    const feedNames = new Intl.Collator(undefined, { sensitivity: 'base' });
+    try {
+        const mode = localStorage.getItem(feedSortKey);
+        if (['name', 'group-count', 'all-count'].includes(mode)) feedSort.value = mode;
+    } catch { /* Sorting still works when browser storage is unavailable. */ }
+
+    function applyFeedSort() {
+        const flat = feedSort.value === 'all-count';
+        for (const group of nav.querySelectorAll(':scope > .feed-group, :scope > .feed-section-label, #ungrouped-feeds')) group.hidden = flat;
+        const existing = nav.querySelector('#flat-feeds');
+        if (!flat) { existing?.remove(); return; }
+        if (existing) return;
+
+        // Keep memberships for editing; each feed gets one group-independent link in the flat list.
+        const list = document.createElement('div');
+        list.className = 'ungrouped-feeds';
+        list.id = 'flat-feeds';
+        const activeFeed = new URL(displayedUrl).searchParams.get('feed');
+        const seen = new Set();
+        for (const row of nav.querySelectorAll('.feed-row')) {
+            const source = row.querySelector('a.feed').dataset.feed;
+            if (seen.has(source)) continue;
+            seen.add(source);
+            const copy = row.cloneNode(true);
+            const link = copy.querySelector('a.feed');
+            const url = new URL(link.href);
+            url.searchParams.delete('group');
+            link.href = url.href;
+            link.dataset.group = '0';
+            link.draggable = false;
+            if (source === activeFeed) link.setAttribute('aria-current', 'page');
+            else link.removeAttribute('aria-current');
+            list.append(copy);
+        }
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'more-feeds';
+        list.append(more);
+        nav.append(list);
+    }
+
+    function activeFeedLinks() {
+        // Both lists receive badge updates, but only the displayed list drives navigation.
+        const selector = feedSort.value === 'all-count' ? ':scope > a.feed, #flat-feeds a.feed' : 'a.feed';
+        return [...nav.querySelectorAll(selector)];
+    }
+
+    function sortFeedRows(section, more) {
+        const order = [...section.querySelectorAll(':scope > .feed-row')];
+        if (!originalFeedOrder.has(section)) originalFeedOrder.set(section, new Map(order.map((row, i) => [row, i])));
+        const original = originalFeedOrder.get(section);
+        const byCount = feedSort.value !== 'name';
+        const count = row => Number(row.querySelector('.count').textContent);
+        const label = row => row.querySelector('.feed-label').textContent;
+        const sorted = [...order].sort((a, b) => (byCount ? count(b) - count(a) : 0)
+            || (section.id === 'flat-feeds' ? feedNames.compare(label(a), label(b)) : original.get(a) - original.get(b)));
+        if (sorted.every((row, i) => row === order[i])) return;
+
+        // Move only out-of-order rows, retaining focus and keeping More feeds at the end.
+        const focused = section.contains(document.activeElement) ? document.activeElement : null;
+        let next = more;
+        for (let i = sorted.length - 1; i >= 0; i--) {
+            const row = sorted[i];
+            if (row.nextElementSibling !== next) section.insertBefore(row, next);
+            next = row;
+        }
+        if (focused && document.activeElement !== focused) focused.focus({ preventScroll: true });
+    }
+
     const expandedMoreFeeds = new Set();
     function updateMoreFeeds() {
         for (const section of nav.querySelectorAll('.group-members, .ungrouped-feeds')) {
+            if ((feedSort.value === 'all-count') !== (section.id === 'flat-feeds')) continue;
             const more = section.querySelector('.more-feeds');
+            sortFeedRows(section, more);
             const expanded = expandedMoreFeeds.has(section.id);
             let zeroUnread = 0;
             for (const link of section.querySelectorAll('.feed[data-feed]')) {
@@ -544,7 +619,16 @@
         }
     }
 
+    feedSort.hidden = false;
+    applyFeedSort();
     updateMoreFeeds();
+    feedSort.addEventListener('change', () => {
+        closeFeedMenu();
+        try { localStorage.setItem(feedSortKey, feedSort.value); } catch { /* Use the choice for this tab. */ }
+        applyFeedSort();
+        updateMoreFeeds();
+        revealCurrentFeed();
+    });
     nav.addEventListener('click', event => {
         const more = event.target.closest('.more-feeds');
         if (more) {
@@ -608,9 +692,9 @@
 
     function moveFeed(direction) {
         // Keyboard feed switching follows visible sidebar entries.
-        const all = Array.from(document.querySelectorAll('.feed[data-feed]')).filter(link => link.dataset.feed);
+        const all = activeFeedLinks().filter(link => link.dataset.feed);
         const current = all.findIndex(link => link.getAttribute('aria-current') === 'page');
-        const folder = document.querySelector('.group-link[aria-current=page]');
+        const folder = feedSort.value === 'all-count' ? null : nav.querySelector('.group-link[aria-current=page]');
         const groupFeeds = folder ? all.filter(link => link.dataset.group === folder.dataset.group) : [];
         const groupStart = direction > 0 ? groupFeeds[0] : groupFeeds.at(-1);
         let index = current >= 0 ? current + direction : groupStart ? all.indexOf(groupStart) : direction > 0 ? 0 : all.length - 1;
@@ -826,7 +910,7 @@
 
     // Scroll to the selected feed only if it is visible in the sidebar.
     function revealCurrentFeed() {
-        const currentFeed = nav.querySelector('.feed[aria-current=page]');
+        const currentFeed = activeFeedLinks().find(link => link.getAttribute('aria-current') === 'page');
         if (!currentFeed || currentFeed.closest('[hidden]')) return;
         const row = currentFeed.getBoundingClientRect();
         const list = nav.getBoundingClientRect();

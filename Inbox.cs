@@ -318,7 +318,8 @@ internal sealed class Inbox : IDisposable
 
         // Keep feed navigation independent of the centered reading stream.
         var html = new StringBuilder("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Feed Inbox</title><link rel=stylesheet href='/inbox.css'><script src='/inbox.js' defer></script>");
-        html.Append("<body data-unread='").Append(unread ? "1" : "0").Append("' data-flags='").Append(dates.Flags).Append("'><aside><strong class=brand>Feed Inbox</strong><nav aria-label='Feeds'>");
+        html.Append("<body data-unread='").Append(unread ? "1" : "0").Append("' data-flags='").Append(dates.Flags).Append("'><aside><strong class=brand>Feed Inbox</strong>")
+            .Append("<select class=feed-sort aria-label='Sort feeds' hidden><option value=name>Grouped: by name</option><option value=group-count>Grouped: by count</option><option value=all-count>All feeds: by count</option></select><nav aria-label='Feeds'>");
         html.Append(FeedLink("", "All feeds", source, unread, counts.Values.Sum(), oldest, 0, group, dates));
         var grouped = new System.Collections.Generic.HashSet<string>();
         // Use the saved folder order and sort feeds by their displayed names.
