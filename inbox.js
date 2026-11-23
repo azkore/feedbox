@@ -400,7 +400,7 @@
             return;
         }
         const action = form.getAttribute('action');
-        if (!['/check-feed', '/check', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed'].includes(action)) return;
+        if (!['/check-feed', '/check', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed', '/import-opml'].includes(action)) return;
         event.preventDefault();
         if (busy || navigation) return;
         if (action === '/check-feed' || action === '/check') { await checkFeed(form); return; }
@@ -420,6 +420,16 @@
             if (action === '/read') {
                 await setRead(form.closest('article[data-post]'), fields.get('mark') !== 'unread');
             } else {
+                if (action === '/import-opml') {
+                    const file = form.elements['opml-file'].files[0];
+                    if (!file || file.size > 1024 * 1024) throw new Error('Choose an OPML file up to 1 MiB.');
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    let binary = '';
+                    for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+                    fields.delete('opml-file');
+                    // Keep the original bytes so the XML parser can honor the file's encoding.
+                    fields.set('opml', btoa(binary));
+                }
                 const response = await fetch(form.action, { method: 'POST', body: fields });
                 const page = await pageFrom(response);
                 if (entries === view && !navigation) {

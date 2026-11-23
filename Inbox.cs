@@ -81,6 +81,12 @@ internal sealed class Inbox : IDisposable
                 Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival() }), "application/json; charset=utf-8");
                 return;
             }
+            if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/subscriptions.opml")
+            {
+                context.Response.Headers["Content-Disposition"] = "attachment; filename=feed-inbox.opml";
+                ReplyBytes(context, 200, Opml.Export(store.RssSubscriptions(), store.Groups()), "text/x-opml; charset=utf-8");
+                return;
+            }
             // Serve only named embedded assets, never a file path supplied by the client.
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/inbox.js")
             { Reply(context, 200, script, "text/javascript; charset=utf-8"); return; }
@@ -91,7 +97,7 @@ internal sealed class Inbox : IDisposable
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/fonts/merriweather.ttf")
             { ReplyBytes(context, 200, merriweather, "font/ttf"); return; }
             if (request.HttpMethod != "POST") { Reply(context, 405, "Method not allowed."); return; }
-            const int maxBody = 4096;
+            var maxBody = request.Url.AbsolutePath == "/import-opml" ? Opml.MaxBytes * 3 : 4096;
             if (request.ContentLength64 > maxBody) { Reply(context, 413, "The upload is too large."); return; }
             if (request.Headers["Origin"] != Url.TrimEnd('/') || request.ContentLength64 < 0
                 || request.ContentType == null || !request.ContentType.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))
@@ -127,6 +133,20 @@ internal sealed class Inbox : IDisposable
                     // Select the new subscription and show the outcome of its first check.
                     form["feed"] = store.AddRss(url, group);
                     await check(form["feed"]);
+                    break;
+                case "/import-opml":
+                    try
+                    {
+                        int skipped;
+                        var entries = Opml.Read(Convert.FromBase64String(form["opml"] ?? ""), out skipped);
+                        var imported = store.ImportRss(entries, form["new-only"] == "1");
+                        result = "&imported=" + imported.Item1.ToString(CultureInfo.InvariantCulture)
+                            + "&existing=" + imported.Item2.ToString(CultureInfo.InvariantCulture)
+                            + "&skipped=" + skipped.ToString(CultureInfo.InvariantCulture);
+                    }
+                    catch (InvalidDataException ex) { Reply(context, 400, ex.Message); return; }
+                    catch (System.Xml.XmlException) { Reply(context, 400, "The OPML file could not be read."); return; }
+                    catch (FormatException) { Reply(context, 400, "The OPML file could not be read."); return; }
                     break;
                 case "/group":
                     var groupName = (form["name"] ?? "").Trim();
@@ -292,6 +312,9 @@ internal sealed class Inbox : IDisposable
         html.Append("</nav><details class=add-source><summary>Add source or group</summary>");
         html.Append(Form("source", "<label>Subreddit <input name=name required maxlength=23 placeholder='r/rss'></label> <button>Add</button>", unread, source, oldest, group, dates));
         html.Append(Form("rss-source", "<label>RSS or Atom URL <input type=url name=url required maxlength=2000 placeholder='https://example.com/feed/'></label> <button>Add feed</button>", unread, source, oldest, group, dates));
+        html.Append(Form("import-opml", "<label>Import RSS/Atom subscriptions <input type=file name=opml-file accept='.opml,.xml,text/xml' required></label>"
+            + "<label><input type=checkbox name=new-only value=1> Only collect new articles after import</label> <button>Import OPML</button>", unread, source, oldest, group, dates));
+        html.Append("<p><a href='/subscriptions.opml' download>Export RSS/Atom OPML</a></p>");
         html.Append(Form("group", "<label>Group <input name=name required maxlength=80></label> <button>Add group</button>", unread, source, oldest, group, dates)).Append("</details>");
         // This is a global archive action regardless of the selected reading view.
         // Bind deletion to the read articles present when this page was rendered.
@@ -335,6 +358,12 @@ internal sealed class Inbox : IDisposable
         if (long.TryParse(query["restored"], NumberStyles.None, CultureInfo.InvariantCulture, out restored))
             html.Append("<p role=status class=bulk-receipt>").Append(restored == 0 ? "No articles to restore." :
                 "Restored " + restored.ToString("N0", CultureInfo.CurrentCulture) + (restored == 1 ? " unread article." : " unread articles.")).Append("</p>");
+        int importedCount, existingCount, skippedCount;
+        if (int.TryParse(query["imported"], NumberStyles.None, CultureInfo.InvariantCulture, out importedCount)
+            && int.TryParse(query["existing"], NumberStyles.None, CultureInfo.InvariantCulture, out existingCount)
+            && int.TryParse(query["skipped"], NumberStyles.None, CultureInfo.InvariantCulture, out skippedCount))
+            html.Append("<p role=status class=bulk-receipt>OPML: ").Append(importedCount).Append(" added, ").Append(existingCount)
+                .Append(" already subscribed, ").Append(skippedCount).Append(" unsupported or invalid.</p>");
         long deletedCount;
         if (long.TryParse(query["deleted"], NumberStyles.None, CultureInfo.InvariantCulture, out deletedCount))
         {

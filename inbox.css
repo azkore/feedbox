@@ -74,7 +74,7 @@ aside .feed[hidden] { display: none; }
 .sidebar-resize:hover, .sidebar-resize:focus-visible { background: var(--rule); }
 .resizing-sidebar, .resizing-sidebar * { cursor: col-resize !important; user-select: none; }
 .add-source input { min-width: 0; width: 100%; margin: 4px 0 8px; padding: 4px 6px; }
-
+.add-source input[type=checkbox] { width: auto; margin: 0 4px 0 0; }
 
 /* The page stays the scroller so native page movement and keyboard selection use the same viewport. */
 /* Feedly centers an 840px card with a minimum 44px gutter. Use half of that space on each side. */

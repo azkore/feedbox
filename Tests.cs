@@ -152,11 +152,97 @@ internal static class Tests
             TestMarkFeedRead();
             TestRss();
             TestAppConfig();
+            TestReadingTools();
+            TestOpml();
         }
         finally
         {
             foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix);
         }
+    }
+
+    private static void TestReadingTools()
+    {
+        var file = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            using (var store = new Store(file))
+            using (var server = new Inbox(store, 55000 + new Random().Next(5000), name => System.Threading.Tasks.Task.FromResult("")))
+            {
+                var a = Post("undo1", "Новости 100%_");
+                var b = Post("undo2", "Other post");
+                var c = Post("undo3", "Previously read");
+                var d = Post("undo4", "After the bulk action");
+                b.body = "Text search marker.";
+                store.ImportHistoricalPosts("rss", new[] { a, b, c });
+                store.SetRead(c.id, true);
+                var arrival = store.LatestArrival();
+                const string receipt = "0123456789abcdef0123456789abcdef";
+                Expect(store.MarkFeedRead("rss", batch: receipt) == 2 && store.CanUndoFeedRead("rss", receipt), "bulk marking records exactly the articles changed");
+                store.ImportHistoricalPosts("rss", new[] { a, d });
+                store.SetRead(b.id, true);
+                Expect(store.UndoFeedRead("rss", receipt) == 1 && store.UndoFeedRead("rss", receipt) == 0
+                    && store.Items(true, "rss").Select(r => r[0]).OrderBy(id => id).SequenceEqual(new[] { a.id, d.id }),
+                    "undo does not alter previously or subsequently read articles or newly arrived ones");
+
+                string html;
+                ArticleFilter literal;
+                Expect(ArticleFilter.TryCreate("", "", out literal, "новости 100%_") && store.Items(false, dates: literal).Single()[0] == a.id,
+                    "SQLite matches Unicode case-insensitively before rendering the view");
+                var searched = Request(server.Url + "?feed=rss&all=1&q=" + Uri.EscapeDataString("новости 100%_"), "GET", null, null, out html);
+                if (searched != 200 || !html.Contains("data-post='" + a.id + "'"))
+                    Console.WriteLine("Unicode search HTTP " + searched + "; query field: " + Regex.Match(html, "<input type=search[^>]+>").Value);
+                Expect(searched == 200 && html.Contains("data-post='" + a.id + "'") && !html.Contains("data-post='" + b.id + "'"), "search folds Unicode and treats % and _ literally");
+                Expect(Request(server.Url + "?feed=rss&all=1&q=TEXT+SEARCH+MARKER", "GET", null, null, out html) == 200
+                    && html.Contains("data-post='" + b.id + "'") && !html.Contains("data-post='" + a.id + "'"), "search finds article body text");
+                Expect(Request(server.Url + "?feed=rss&all=1&oldest=1&at=" + b.id, "GET", null, null, out html) == 200
+                    && !html.Contains("data-post='" + a.id + "'") && html.Contains("data-post='" + b.id + "'"), "resume can start from the exact saved article");
+                Expect(Request(server.Url + "?feed=rss&oldest=1&at=" + b.id, "GET", null, null, out html) == 200
+                    && html.Contains("data-post='" + a.id + "'") && !html.Contains("data-post='" + b.id + "'"), "unread resume falls back to the first unread article if the bookmark is read");
+                Expect(Request(server.Url + "new-articles?feed=rss&since=" + arrival, "GET", null, null, out html) == 200
+                    && html.Contains("data-post='" + d.id + "'") && !html.Contains("data-post='" + a.id + "'"), "live arrivals include new saves rather than rediscovered posts");
+            }
+        }
+        finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(file + suffix)) File.Delete(file + suffix); }
+    }
+
+    private static void TestOpml()
+    {
+        var file = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            using (var store = new Store(file))
+            using (var server = new Inbox(store, 55000 + new Random().Next(5000), name => System.Threading.Tasks.Task.FromResult("")))
+            {
+                const string url = "https://example.com/radio.xml";
+                const string opml = "<opml><body><outline text='Music'><outline text='Radio &amp; News' xmlUrl='https://example.com/radio.xml'/></outline>"
+                    + "<outline text='Archive'><outline xmlUrl='https://example.com/radio.xml'/></outline><outline xmlUrl='https://www.reddit.com/r/rss/.rss'/></body></opml>";
+                var payload = Uri.EscapeDataString(Convert.ToBase64String(Encoding.UTF8.GetBytes(opml)));
+                string html;
+                Request(server.Url, "GET", null, null, out html);
+                var token = Regex.Match(html, "name=token value='([0-9a-f]+)'").Groups[1].Value;
+                var origin = server.Url.TrimEnd('/');
+                Expect(Request(server.Url + "import-opml", "POST", origin, "token=" + token + "&new-only=1&opml=" + payload, out html) == 303
+                    && store.RssSubscriptions().Count == 1 && store.Groups().Count(g => g.Members.Count == 1) == 2 && store.Count(false) == 0,
+                    "OPML adds metadata once and preserves both group memberships");
+                var source = Store.RssKey(url);
+                var old = Post("baseline1", "Before import"); old.publicationKnown = true;
+                var unknown = Post("baseline2", "Undated at first check");
+                var fresh = Post("baseline3", "Published after import"); fresh.publicationKnown = true;
+                fresh.created = DateTimeOffset.UtcNow.AddMinutes(1).ToString("o");
+                Expect(store.SaveRss(source, "Radio", new[] { old, unknown, fresh }) == 1 && store.Count(true, source) == 1,
+                    "new-only import saves post-import dated entries but leaves old and initial undated articles out of SQLite posts");
+                var later = Post("baseline4", "New undated article");
+                Expect(store.SaveRss(source, "Radio", new[] { unknown, later }) == 1 && store.Count(false, source) == 2,
+                    "the next poll skips the undated baseline and saves newly seen entries");
+                Expect(Request(server.Url + "subscriptions.opml", "GET", null, null, out html) == 200, "OPML export is available in the inbox");
+                int skipped;
+                var roundTrip = Opml.Read(Encoding.UTF8.GetBytes(html), out skipped);
+                Expect(skipped == 0 && roundTrip.Count == 2 && roundTrip.All(feed => feed.Label == "Radio & News")
+                    && store.ImportRss(roundTrip, false).Item1 == 0 && store.Groups().Count == 2, "OPML export and reimport retain labels and multiple folders without duplicates");
+            }
+        }
+        finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(file + suffix)) File.Delete(file + suffix); }
     }
 
     private static void TestAppConfig()
