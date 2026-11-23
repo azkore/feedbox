@@ -1,0 +1,144 @@
+/* Match the article fonts from the reference without a network request. */
+@font-face { font-family: Inter; src: url('/fonts/inter.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: Merriweather; src: url('/fonts/merriweather.ttf') format('truetype'); font-weight: 400; font-display: swap; }
+
+:root {
+    font: 14px Inter, system-ui, sans-serif;
+    color-scheme: light dark;
+    --paper: #fff;
+    --ink: #242524;
+    --body-ink: #333;
+    --muted: #717573;
+    --nav: #f6f6f6;
+    --rule: #e2e4e3;
+    --active: #ebedec;
+    --accent: #286d45;
+    --sidebar-width: 272px;
+    --bar-height: 48px;
+}
+@media (prefers-color-scheme: dark) {
+    :root { --paper:#171a19; --ink:#edf1ee; --body-ink:#edf1ee; --muted:#aebcb4; --nav:#202522; --rule:#3b463e; --active:#303c34; --accent:#91d5ad; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); }
+a { color: var(--accent); }
+button, input { font: inherit; }
+button { border: 1px solid var(--rule); border-radius: 5px; padding: 3px 7px; background: var(--paper); color: var(--ink); cursor: pointer; font-size: 12px; }
+button:hover { background: var(--active); }
+form.inline { display: inline; }
+summary { cursor: pointer; }
+
+/* Keep the feed list independently scrollable without scrolling the article column. */
+aside { position: fixed; inset: 0 auto 0 0; width: var(--sidebar-width); background: var(--nav); border-right: 1px solid var(--rule); display: flex; flex-direction: column; }
+.brand { min-height: var(--bar-height); padding: 0 16px; display: flex; align-items: center; border-bottom: 1px solid var(--rule); }
+aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 6px 7px; }
+.feed { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 32px; padding: 4px 10px; border-radius: 5px; color: var(--ink); text-decoration: none; font-size: 13px; }
+.feed-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed[data-feed]:not([data-feed='']) .feed-label::before { content: 'r/'; display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 9px; background: #d33d14; color: white; font: 700 10px/16px system-ui, sans-serif; text-align: center; }
+.feed.rss-feed[data-feed] .feed-label::before { content: '◔'; background: #bc5914; }
+.feed[aria-current=page], .feed:hover { background: var(--active); }
+.feed[aria-current=page] { font-weight: 650; }
+.count { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.feed-row { position: relative; }
+.feed-row .feed-options { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); width: 24px; padding: 1px 0; visibility: hidden; border-color: transparent; background: var(--nav); }
+.feed-row:hover .feed-options, .feed-row:focus-within .feed-options, .feed-options[aria-expanded='true'] { visibility: visible; }
+.feed-row:hover .count, .feed-row:focus-within .count { visibility: hidden; }
+.feed-menu { position: fixed; z-index: 5; min-width: 140px; padding: 4px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); box-shadow: 0 4px 15px #0002; }
+.feed-menu button { display: block; width: 100%; padding: 5px 7px; text-align: left; border-color: transparent; }
+.feed-editor { width: min(360px, calc(100vw - 32px)); padding: 18px; background: var(--paper); color: var(--ink); border: 1px solid var(--rule); border-radius: 6px; }
+.feed-editor::backdrop { background: #0005; }
+.feed-editor h2 { margin: 0 0 12px; font-size: 16px; }
+.feed-editor form:not([hidden]) { display: grid; gap: 12px; }
+.feed-editor form[hidden] { display: none; }
+.feed-editor fieldset { max-height: 48vh; overflow: auto; border: 1px solid var(--rule); }
+.feed-editor label { display: block; padding: 4px 0; }
+.feed-editor input[name=label] { display: block; width: 100%; margin-top: 4px; }
+.dialog-actions { display: flex; gap: 8px; }
+.feed-editor-error:empty { display: none; }
+.feed-group { margin-top: 8px; }
+.group-heading { display: flex; align-items: center; }
+.group-heading.feed-drop-target { outline: 1px solid var(--accent); border-radius: 5px; background: var(--active); }
+.group-link { flex: 1; min-width: 0; font-weight: 650; }
+.group-toggle { display: grid; place-items: center; width: 20px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--muted); }
+.group-toggle::before { content: ''; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1px 1px 0; transform: rotate(-45deg); }
+.group-toggle[aria-expanded=true]::before { transform: translateY(-2px) rotate(45deg); }
+.feed-group .feed:not(.group-link) { padding-left: 25px; }
+.more-feeds { margin-left: 10px; padding: 4px 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.group-members .more-feeds { margin-left: 25px; }
+aside .feed[hidden] { display: none; }
+.feed-section-label { margin: 15px 13px 4px; color: var(--muted); font-size: 12px; }
+.add-source { border-top: 1px solid var(--rule); padding: 10px 16px; }
+.add-source form { display: block; margin-top: 8px; }
+.add-source form + form { margin-top: 14px; }
+.sidebar-resize { position: absolute; inset: 0 -4px 0 auto; width: 9px; cursor: col-resize; touch-action: none; }
+.sidebar-resize:hover, .sidebar-resize:focus-visible { background: var(--rule); }
+.resizing-sidebar, .resizing-sidebar * { cursor: col-resize !important; user-select: none; }
+.add-source input { min-width: 0; width: 100%; margin: 4px 0 8px; padding: 4px 6px; }
+
+/* The page stays the scroller so native page movement and keyboard selection use the same viewport. */
+/* Feedly centers an 840px card with a minimum 44px gutter. Use half of that space on each side. */
+main { --reader-gutter: max(22px, calc((100% - var(--sidebar-width) - 840px) / 4)); margin-left: calc(var(--sidebar-width) + var(--reader-gutter)); margin-right: var(--reader-gutter); padding-bottom: calc(56px + var(--reader-tail, 0px)); }
+.feed-header { position: sticky; top: 0; z-index: 2; background: var(--paper); }
+.heading { min-height: var(--bar-height); display: flex; justify-content: space-between; align-items: center; gap: 6px 12px; flex-wrap: wrap; }
+h1 { margin: 0; font-size: 15px; }
+.toolbar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; font-size: 13px; }
+.toolbar .icon-button { min-width: 24px; height: 24px; padding: 0 4px; font-size: 15px; line-height: 1; }
+.bulk-receipt { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+.date-filter { position: relative; }
+.date-filter form { position: absolute; z-index: 3; top: 100%; right: 0; display: grid; gap: 8px; min-width: 205px; margin-top: 7px; padding: 12px; background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; box-shadow: 0 4px 15px #0002; }
+.date-filter label { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.date-filter small { color: var(--muted); }
+.date-actions { display: flex; align-items: center; gap: 12px; }
+.toolbar a, .toolbar summary { color: var(--muted); text-decoration: none; }
+.toolbar a[aria-current=page] { color: var(--ink); font-weight: 650; }
+.toolbar a:hover { text-decoration: underline; }
+.toolbar .sort { border-bottom: 1px dotted var(--muted); }
+.check-status { position: relative; }
+.check-status ul { position: absolute; z-index: 3; top: 100%; right: 0; width: min(360px, 78vw); max-height: 55vh; overflow: auto; list-style: none; margin: 7px 0; padding: 10px 14px; background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; box-shadow: 0 4px 15px #0002; }
+.check-status li { padding: 5px 0; }
+.check-age { color: var(--muted); }
+.check-status li button { margin-left: 5px; }
+#key-status { margin: 0; padding: 5px 0; color: var(--muted); }
+#key-status:empty, #check-feedback:empty { display: none; }
+#check-feedback { margin: 0; padding: 5px 0; }
+#entries h2 { margin: 14px 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
+
+/* Half of Feedly's 34px article inset, including the border. */
+article { margin: 0 0 14px; padding: 33px 16px 36px; border: 1px solid var(--rule); border-radius: 3px; scroll-margin-top: calc(var(--bar-height) + 8px); }
+/* Keep card borders uniform when J or K focuses an article. Links and buttons retain their focus rings. */
+article[data-current]:focus { outline: none; }
+.article-inner { min-width: 0; overflow-wrap: anywhere; }
+.article-inner h3 { margin: 0 0 8px; font-size: 26px; font-weight: 650; line-height: 32px; letter-spacing: -.025em; }
+.article-inner h3 a { color: var(--ink); text-decoration: none; }
+.article-inner h3 a:hover { text-decoration: underline; }
+article[data-read='1'] h3 a { color: var(--muted); }
+.article-inner small { color: var(--muted); font-size: 13px; }
+/* Keep the read form available to J, but only show an article control for marking unread. */
+.article-actions { display: flex; justify-content: flex-end; margin: 4px 0; }
+article[data-read='0'] .article-actions { display: none; }
+.context { font: 400 16px/27px Merriweather, Georgia, serif; color: var(--body-ink); white-space: pre-line; }
+.context p { margin: 0 0 24px; }
+.context p:last-child { margin-bottom: 0; }
+.context ul, .context ol { margin: 0 0 24px; padding-left: 2em; }
+.context li p { margin-bottom: 0; }
+.context a { color: inherit; text-decoration-color: var(--muted); text-underline-offset: .14em; }
+.context blockquote { margin: 0 0 24px; padding-left: 1em; border-left: 3px solid var(--rule); }
+.context pre { margin: 0 0 24px; padding: 12px; background: var(--nav); border-radius: 4px; white-space: pre; overflow-x: auto; }
+.context code { font: .88em Consolas, monospace; }
+.context h4 { margin: 24px 0 8px; font-size: 1.05em; }
+.context hr { border: 0; border-top: 1px solid var(--rule); }
+.context .continued { color: var(--muted); }
+.preview:not([hidden]) { display: block; margin: 16px 0 0; max-width: 100%; width: auto; height: auto; max-height: 42rem; object-fit: contain; border-radius: 3px; }
+#more { display: inline-block; margin-top: 12px; }
+
+@media (max-width: 760px) {
+    :root { --bar-height: 70px; }
+    aside { position: static; width: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
+    .sidebar-resize { display: none; }
+    aside nav { max-height: 132px; flex: auto; }
+    .brand { min-height: 36px; }
+    .add-source input { width: 150px; }
+    main { margin: 0 12px; }
+    article { padding: 23px 16px; }
+    .article-inner h3 { font-size: 22px; }
+}

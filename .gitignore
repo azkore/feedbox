@@ -1,0 +1,6 @@
+build/
+profile/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
