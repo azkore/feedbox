@@ -79,15 +79,16 @@ internal sealed class Inbox : IDisposable
             {
                 var counts = store.UnreadCounts(dates);
                 var json = new System.Web.Script.Serialization.JavaScriptSerializer();
-                Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival() }), "application/json; charset=utf-8");
+                var archive = query["feed"] == null ? null : ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]));
+                Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival(), archive }), "application/json; charset=utf-8");
                 return;
             }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/sidebar-counts")
             {
                 // This request is made only when opening a sidebar tooltip.
-                var counts = store.SidebarArticleCounts(SourceName(query["feed"]), GroupId(query["group"]));
+                var counts = ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]));
                 var json = new System.Web.Script.Serialization.JavaScriptSerializer();
-                Reply(context, 200, json.Serialize(new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2] }), "application/json; charset=utf-8");
+                Reply(context, 200, json.Serialize(counts), "application/json; charset=utf-8");
                 return;
             }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/rss-body")
@@ -362,7 +363,9 @@ internal sealed class Inbox : IDisposable
         if (groups.Count > 0) html.Append("<div hidden>").Append(Form("move-feed", "", unread, source, oldest, group, dates)).Append("</div>");
         html.Append("</nav><div id=sidebar-count-tip role=tooltip hidden></div><div class=sidebar-resize role=separator aria-label='Feed sidebar width' aria-orientation=vertical aria-valuemin=160 aria-valuemax=560 aria-valuenow=272 tabindex=0></div></aside>");
 
-        html.Append("<main><header class=feed-header><div class=heading><h1>").Append(E(title)).Append("</h1><div class=toolbar>");
+        html.Append("<main><header class=feed-header><div class=heading><div class=heading-title><h1>").Append(E(title)).Append("</h1> ");
+        AppendHeadingCounts(html, source, group);
+        html.Append("</div><div class=toolbar>");
         html.Append(StateControl(source, oldest, group, dates));
         html.Append("<a class=sort href='").Append(E(ViewUrl(source, unread, !oldest, group, dates))).Append("' title='Switch to ")
             .Append(oldest ? "newest first'>Oldest first" : "oldest first'>Newest first").Append("</a>");
@@ -429,6 +432,23 @@ internal sealed class Inbox : IDisposable
         }
         html.Append(FeedOptions(source, unread, oldest, group, dates, groups));
         return html.Append("</main></body></html>").ToString();
+    }
+
+    private object ArchiveCountSummary(string source, int group)
+    {
+        var counts = store.SidebarArticleCounts(source, group);
+        return new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2] };
+    }
+
+    private void AppendHeadingCounts(StringBuilder html, string source, int group)
+    {
+        // The heading uses the same unfiltered scope as the sidebar tooltip.
+        var counts = store.SidebarArticleCounts(source, group);
+        html.Append("<span class=heading-counts><span data-count-part=marked").Append(counts[0] == 0 ? " hidden" : "")
+            .Append("><span data-count=marked>").Append(counts[0]).Append("</span>/</span><span data-count-part=read")
+            .Append(counts[1] == 0 ? " hidden" : "").Append("><span data-count=read>").Append(counts[1])
+            .Append("</span>/<span data-count=unread>").Append(counts[2] - counts[1])
+            .Append("</span>/</span><span data-count=total>").Append(counts[2]).Append("</span></span>");
     }
 
     private void AppendSidebarTools(StringBuilder html, bool unread, string source, bool oldest, int group, ArticleFilter dates)

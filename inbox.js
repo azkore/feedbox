@@ -105,12 +105,15 @@
             const url = new URL('/unread-counts', displayedUrl);
             const filter = new URL(displayedUrl).searchParams;
             url.searchParams.set('flags', document.body.dataset.flags);
+            url.searchParams.set('feed', filter.get('feed') || '');
+            if (filter.has('group')) url.searchParams.set('group', filter.get('group'));
             for (const bound of ['from', 'to', 'q']) if (filter.has(bound)) url.searchParams.set(bound, filter.get(bound));
             const response = await fetch(url);
             if (!response.ok) return;
-            const { feeds, total, arrival } = await response.json();
+            const { feeds, total, arrival, archive } = await response.json();
             // Discard a snapshot taken before a newer read action or view change.
             if (busy || navigation || entries !== view || readRevision !== revision) return;
+            if (archive) updateHeadingCounts(archive);
             const unread = name => Object.hasOwn(feeds, name) ? feeds[name] : 0;
             for (const link of nav.querySelectorAll('.feed[data-feed]')) {
                 let count = total;
@@ -126,6 +129,17 @@
             if (arrival > Number(view.dataset.arrival)) await refreshArticles(view, revision);
         } catch { /* Preserve the current badges if the local app cannot be reached. */ }
         finally { countsPending = false; }
+    }
+
+    function updateHeadingCounts(counts) {
+        const heading = header.querySelector('.heading-counts');
+        for (const field of ['marked', 'read', 'unread', 'total']) {
+            const value = String(counts[field]);
+            const counter = heading.querySelector(`[data-count=${field}]`);
+            if (counter.textContent !== value) counter.textContent = value;
+        }
+        heading.querySelector('[data-count-part=marked]').hidden = counts.marked === 0;
+        heading.querySelector('[data-count-part=read]').hidden = counts.read === 0;
     }
 
     async function refreshArticles(view, revision) {
@@ -819,7 +833,17 @@
     function updateArticleState(row, read, marked) {
         readRevision++;
         if (!row.isConnected) return;
-        const delta = Number(inView(read, marked)) - Number(inView(row.dataset.read === '1', row.dataset.marked === '1'));
+        const wasRead = row.dataset.read === '1';
+        const wasMarked = row.dataset.marked === '1';
+        const delta = Number(inView(read, marked)) - Number(inView(wasRead, wasMarked));
+        // The archive breakdown changes even when the article still matches the reading filter.
+        if (read !== wasRead || marked !== wasMarked) {
+            const count = field => Number(header.querySelector(`.heading-counts [data-count=${field}]`).textContent);
+            const total = count('total');
+            const readCount = Math.max(0, Math.min(total, count('read') + Number(read) - Number(wasRead)));
+            const markedCount = Math.max(0, Math.min(total, count('marked') + Number(marked) - Number(wasMarked)));
+            updateHeadingCounts({ marked: markedCount, read: readCount, unread: total - readCount, total });
+        }
         row.dataset.read = read ? '1' : '0';
         row.dataset.marked = marked ? '1' : '0';
         row.querySelector('.marked-label').hidden = !marked;

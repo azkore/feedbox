@@ -97,6 +97,8 @@ main { --reader-gutter: max(22px, calc((100% - var(--sidebar-width) - 840px) / 4
 .feed-header { position: sticky; top: 0; z-index: 2; background: var(--paper); }
 .heading { min-height: var(--bar-height); display: flex; justify-content: space-between; align-items: center; gap: 6px 12px; flex-wrap: wrap; }
 h1 { margin: 0; font-size: 15px; }
+.heading-title h1 { display: inline; }
+.heading-counts { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .toolbar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; font-size: 13px; }
 .toolbar .icon-button { min-width: 24px; height: 24px; padding: 0 4px; font-size: 15px; line-height: 1; }
 .bulk-receipt { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
