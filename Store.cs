@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 
 internal sealed class Post
 {
+    public bool publicationKnown;
     public string id { get; set; }
     public string title { get; set; }
     public string path { get; set; }
@@ -36,37 +37,40 @@ internal sealed class FeedGroup
     public readonly List<string> Members = new List<string>();
 }
 
-internal sealed class PublicationDates
+internal sealed class ArticleFilter
 {
-    public static readonly PublicationDates All = new PublicationDates("", "", "", "");
-    public readonly string From, To, StartUtc, EndUtc;
+    public static readonly ArticleFilter All = new ArticleFilter("", "", "", "", "");
+    public readonly string From, To, StartUtc, EndUtc, Search;
     public bool Active { get { return From != "" || To != ""; } }
 
-    private PublicationDates(string from, string to, string startUtc, string endUtc)
+    private ArticleFilter(string from, string to, string startUtc, string endUtc, string search)
     {
         From = from;
         To = to;
         StartUtc = startUtc;
         EndUtc = endUtc;
+        Search = search;
     }
 
-    public static bool TryCreate(string from, string to, out PublicationDates dates)
+    public static bool TryCreate(string from, string to, out ArticleFilter dates, string search = null)
     {
         const string format = "yyyy-MM-dd";
         dates = All;
         from = from ?? "";
         to = to ?? "";
+        search = (search ?? "").Trim();
+        if (search.Length > 120) return false;
         DateTime first = DateTime.MinValue, last = DateTime.MaxValue.Date;
         if ((from != "" && !DateTime.TryParseExact(from, format, CultureInfo.InvariantCulture, DateTimeStyles.None, out first))
             || (to != "" && !DateTime.TryParseExact(to, format, CultureInfo.InvariantCulture, DateTimeStyles.None, out last)) || first > last) return false;
-        if (from == "" && to == "") return true;
+        if (from == "" && to == "" && search == "") return true;
 
         // Convert each local midnight separately so the range still matches the date headings on DST days.
         // Use a UTC second prefix: saved articles have varying fractional precision but share this prefix.
         const string utcPrefix = "yyyy-MM-dd'T'HH:mm:ss";
-        dates = new PublicationDates(from, to,
+        dates = new ArticleFilter(from, to,
             from == "" ? "" : first.ToUniversalTime().ToString(utcPrefix, CultureInfo.InvariantCulture),
-            to == "" || last == DateTime.MaxValue.Date ? "" : last.AddDays(1).ToUniversalTime().ToString(utcPrefix, CultureInfo.InvariantCulture));
+            to == "" || last == DateTime.MaxValue.Date ? "" : last.AddDays(1).ToUniversalTime().ToString(utcPrefix, CultureInfo.InvariantCulture), search);
         return true;
     }
 }
@@ -74,6 +78,8 @@ internal sealed class PublicationDates
 internal sealed class Store : IDisposable
 {
     private const string PublicationFilter = " AND (?='' OR published>=?) AND (?='' OR published<?)";
+    private const string SearchFilter = " AND (?='' OR inbox_contains(title,?) OR inbox_contains(body,?))";
+    private static readonly SqlFunction ContainsFunction = ContainsText;
     private readonly object gate = new object();
     private readonly string databasePath;
     private IntPtr db;
@@ -83,11 +89,13 @@ internal sealed class Store : IDisposable
         databasePath = path;
         Directory.CreateDirectory(Path.GetDirectoryName(path));
         Check(sqlite3_open_v2(Bytes(path), out db, 6, IntPtr.Zero));
+        Check(sqlite3_create_function_v2(db, Bytes("inbox_contains"), 2, 1, IntPtr.Zero, ContainsFunction,
+            IntPtr.Zero, IntPtr.Zero, IntPtr.Zero));
         // Keep the working file readable by other SQLite tools while the inbox runs.
         Check(sqlite3_busy_timeout(db, 5000));
         Run("PRAGMA journal_mode=WAL");
         var version = int.Parse(Query("PRAGMA user_version")[0][0], CultureInfo.InvariantCulture);
-        if (version < 0 || version > 11) throw new InvalidOperationException("Unsupported database version.");
+        if (version < 0 || version > 12) throw new InvalidOperationException("Unsupported database version.");
         Transaction(() =>
         {
             Run(@"CREATE TABLE IF NOT EXISTS sources (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1,
@@ -160,6 +168,18 @@ internal sealed class Store : IDisposable
                 Run("ALTER TABLE sources ADD COLUMN custom_label TEXT NOT NULL DEFAULT ''");
                 Run("PRAGMA user_version=11");
             }
+            if (version < 12)
+            {
+                // Bulk-read ownership stays with the article until another explicit read action.
+                Run("ALTER TABLE posts ADD COLUMN bulk_mark TEXT");
+                Run("CREATE INDEX posts_bulk_mark ON posts(bulk_mark) WHERE bulk_mark IS NOT NULL");
+                Run("ALTER TABLE posts ADD COLUMN arrival INTEGER NOT NULL DEFAULT 0");
+                Run("ALTER TABLE sources ADD COLUMN rss_since TEXT NOT NULL DEFAULT ''");
+                Run("ALTER TABLE sources ADD COLUMN rss_baseline_pending INTEGER NOT NULL DEFAULT 0");
+                Run("CREATE INDEX posts_arrival ON posts(arrival,id)");
+                Run("INSERT INTO settings VALUES ('last_arrival','0')");
+                Run("PRAGMA user_version=12");
+            }
         });
     }
 
@@ -218,10 +238,67 @@ internal sealed class Store : IDisposable
         int added = 0;
         Transaction(() =>
         {
-            if (title != "") Run("UPDATE sources SET label=? WHERE name=? AND kind='rss'", title, source);
+            var policy = Query("SELECT rss_since,rss_baseline_pending FROM sources WHERE name=? AND kind='rss'", source)[0];
+            if (policy[0] != "")
+            {
+                var cutoff = DateTimeOffset.Parse(policy[0], CultureInfo.InvariantCulture);
+                var candidates = new List<Post>();
+                foreach (var post in posts)
+                {
+                    // During the first successful fetch, remember undated entries by ID without adding them to the archive.
+                    bool skipped = post.publicationKnown ? DateTimeOffset.Parse(post.created, CultureInfo.InvariantCulture) <= cutoff : policy[1] == "1";
+                    if (skipped)
+                    {
+                        if (policy[1] == "1") Run("INSERT OR IGNORE INTO deleted_posts(id) VALUES (?)", post.id);
+                    }
+                    else candidates.Add(post);
+                }
+                posts = candidates;
+            }
             added = SavePosts(source, posts);
+            Run("UPDATE sources SET label=CASE WHEN ?='' THEN label ELSE ? END,rss_baseline_pending=0 WHERE name=? AND kind='rss'", title, title, source);
         });
         return added;
+    }
+
+    public List<string[]> RssSubscriptions()
+    {
+        return Query("SELECT name,COALESCE(NULLIF(custom_label,''),label),feed_url FROM sources WHERE kind='rss' ORDER BY label,name");
+    }
+
+    public Tuple<int, int> ImportRss(IEnumerable<OpmlFeed> feeds, bool newOnly)
+    {
+        int added = 0, existing = 0;
+        Transaction(() =>
+        {
+            var cutoff = newOnly ? Stamp(DateTimeOffset.UtcNow) : "";
+            var folders = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var folder in Groups()) if (!folders.ContainsKey(folder.Name)) folders.Add(folder.Name, folder.Id);
+            var visited = new HashSet<string>();
+            foreach (var entry in feeds)
+            {
+                var name = RssKey(entry.Url.AbsoluteUri);
+                if (visited.Add(name))
+                {
+                    // Import labels and the first-fetch choice only for new subscriptions.
+                    Run("INSERT OR IGNORE INTO sources(name,label,kind,feed_url,custom_label,rss_since,rss_baseline_pending) VALUES (?,?,'rss',?,?,?,?)",
+                        name, entry.Url.Host, entry.Url.AbsoluteUri, entry.Label, cutoff, newOnly ? "1" : "0");
+                    if (Query("SELECT changes()")[0][0] == "1") added++;
+                    else existing++;
+                }
+                if (entry.Group == "") continue;
+                int group;
+                if (!folders.TryGetValue(entry.Group, out group))
+                {
+                    Run("INSERT INTO feed_groups(name,position) SELECT ?,COALESCE(MAX(position)+1,0) FROM feed_groups", entry.Group);
+                    group = int.Parse(Query("SELECT last_insert_rowid()")[0][0], CultureInfo.InvariantCulture);
+                    folders.Add(entry.Group, group);
+                }
+                var id = group.ToString(CultureInfo.InvariantCulture);
+                Run("INSERT OR IGNORE INTO feed_group_members(group_id,source,position) VALUES (?,?,COALESCE((SELECT MAX(position)+1 FROM feed_group_members WHERE group_id=?),0))", id, name, id);
+            }
+        });
+        return Tuple.Create(added, existing);
     }
 
     public bool IsPaused { get { return Query("SELECT value FROM settings WHERE key='collection_paused'")[0][0] == "1"; } }
@@ -455,22 +532,30 @@ internal sealed class Store : IDisposable
     private int SavePosts(string name, IEnumerable<Post> posts, bool keepExisting = false)
     {
         var now = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+        var arrival = LatestArrival();
         int added = 0;
         foreach (var post in posts)
         {
             // Rediscovery can refresh the title and link, never the user's read state.
-            Run("INSERT OR IGNORE INTO posts(id,source,title,path,published,first_seen) SELECT ?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM deleted_posts WHERE id=?)",
-                post.id, name, post.title, post.path, post.created, now, post.id);
+            Run("INSERT OR IGNORE INTO posts(id,source,title,path,published,first_seen,arrival) SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM deleted_posts WHERE id=?)",
+                post.id, name, post.title, post.path, post.created, now, (arrival + 1).ToString(CultureInfo.InvariantCulture), post.id);
             // A third-party backfill must not replace content already fetched directly.
             // Count only inserted rows, before the metadata UPDATE replaces SQLite's changes count.
             bool inserted = Query("SELECT changes()")[0][0] == "1";
-            if (inserted) added++;
+            if (inserted) { added++; arrival++; }
             if (keepExisting && !inserted) continue;
             // A shorter listing card must not erase context captured on an earlier check.
             Run("UPDATE posts SET title=?,path=?,author=COALESCE(NULLIF(?,''),author),body=COALESCE(NULLIF(?,''),body),image=COALESCE(NULLIF(?,''),image),original_url=COALESCE(NULLIF(?,''),original_url),content=COALESCE(NULLIF(?,''),content) WHERE id=?",
                 post.title, post.path, post.author, post.body, post.image, post.originalUrl, post.content != null && post.content.Length <= 100000 ? post.content : null, post.id);
         }
+        // Publish the sequence in the same transaction as the articles, including across restarts.
+        if (added > 0) Run("UPDATE settings SET value=? WHERE key='last_arrival'", arrival.ToString(CultureInfo.InvariantCulture));
         return added;
+    }
+
+    public long LatestArrival()
+    {
+        return long.Parse(Query("SELECT value FROM settings WHERE key='last_arrival'")[0][0], CultureInfo.InvariantCulture);
     }
 
     public List<string[]> Sidebar()
@@ -489,12 +574,12 @@ internal sealed class Store : IDisposable
             ORDER BY name", source, group.ToString(CultureInfo.InvariantCulture));
     }
 
-    public Dictionary<string, long> UnreadCounts(PublicationDates dates = null)
+    public Dictionary<string, long> UnreadCounts(ArticleFilter dates = null)
     {
         // Use one SQLite snapshot for all badges, including feeds that appear in multiple groups.
-        dates = dates ?? PublicationDates.All;
-        return Query("SELECT source,count(*) FROM posts WHERE read_at IS NULL" + PublicationFilter + " GROUP BY source",
-            dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc)
+        dates = dates ?? ArticleFilter.All;
+        return Query("SELECT source,count(*) FROM posts WHERE read_at IS NULL" + PublicationFilter + SearchFilter + " GROUP BY source",
+            dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc, dates.Search, dates.Search, dates.Search)
             .ToDictionary(row => row[0], row => long.Parse(row[1], CultureInfo.InvariantCulture));
     }
 
@@ -508,41 +593,83 @@ internal sealed class Store : IDisposable
     public long DatabaseFileBytes { get { return new FileInfo(databasePath).Length; } }
 
     public List<string[]> Items(bool unread, string source = "", string before = "", string beforeId = "", int limit = 101, bool oldest = false, int group = 0,
-        PublicationDates dates = null)
+        ArticleFilter dates = null, bool inclusive = false, long since = -1, long through = 0, string edge = "", string edgeId = "")
     {
         // Page from the last displayed row rather than an offset that shifts as rows are marked read.
-        dates = dates ?? PublicationDates.All;
+        dates = dates ?? ArticleFilter.All;
         var comparison = oldest ? ">" : "<";
         var order = oldest ? " ASC" : " DESC";
-        return Query("SELECT id,source,title,original_url,published,read_at,author,body,image,content FROM posts WHERE (?='' OR source=?)"
+        var groupId = group.ToString(CultureInfo.InvariantCulture);
+        var sql = "SELECT id,source,title,original_url,published,read_at,author,body,image,content,arrival FROM posts WHERE (?='' OR source=?)"
             + " AND (?='0' OR source IN (SELECT source FROM feed_group_members WHERE group_id=?))"
-             + (unread ? " AND read_at IS NULL" : "")
-             + PublicationFilter
-            + " AND (?='' OR published " + comparison + " ? OR (published=? AND id " + comparison + " ?)) ORDER BY published" + order + ",id" + order + " LIMIT ?",
-             source, source, group.ToString(CultureInfo.InvariantCulture), group.ToString(CultureInfo.InvariantCulture), dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc,
-             before, before, before, beforeId, limit.ToString(CultureInfo.InvariantCulture));
+            + (unread ? " AND read_at IS NULL" : "") + PublicationFilter + SearchFilter;
+        var args = new List<string> { source, source, groupId, groupId, dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc,
+            dates.Search, dates.Search, dates.Search };
+        if (since >= 0)
+        {
+            // Only merge into the loaded prefix. Later articles are picked up by normal pagination.
+            var edgeComparison = oldest ? "<" : ">";
+            sql += " AND arrival>CAST(? AS INTEGER) AND arrival<=CAST(? AS INTEGER)";
+            args.AddRange(new[] { since.ToString(CultureInfo.InvariantCulture), through.ToString(CultureInfo.InvariantCulture) });
+            if (edge != "")
+            {
+                sql += " AND (published " + edgeComparison + " ? OR (published=? AND id " + edgeComparison + "=?))";
+                args.AddRange(new[] { edge, edge, edgeId });
+            }
+            sql += " ORDER BY arrival";
+        }
+        else
+        {
+            sql += " AND (?='' OR published " + comparison + " ? OR (published=? AND id " + comparison + (inclusive ? "=" : "") + " ?))"
+                + " ORDER BY published" + order + ",id" + order;
+            args.AddRange(new[] { before, before, before, beforeId });
+        }
+        args.Add(limit.ToString(CultureInfo.InvariantCulture));
+        return Query(sql + " LIMIT ?", args.ToArray());
+    }
+
+    public string PublishedAt(string id)
+    {
+        var rows = Query("SELECT published FROM posts WHERE id=?", id);
+        return rows.Count == 0 ? "" : rows[0][0];
     }
 
     public bool SetRead(string id, bool read)
     {
         lock (gate)
         {
-            Run("UPDATE posts SET read_at=? WHERE id=?", read ? DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture) : null, id);
+            Run("UPDATE posts SET read_at=?,bulk_mark=NULL WHERE id=?", read ? Stamp(DateTimeOffset.UtcNow) : null, id);
             // A stale tab cannot restore a post that has already been removed.
             return Query("SELECT changes()")[0][0] == "1";
         }
     }
 
-    public long MarkFeedRead(string source, PublicationDates dates = null)
+    public long MarkFeedRead(string source, ArticleFilter dates = null, string batch = null, long through = long.MaxValue)
     {
         // Mark all dates shown by the current filter, including posts outside the rendered page.
-        dates = dates ?? PublicationDates.All;
+        dates = dates ?? ArticleFilter.All;
         lock (gate)
         {
-            Run("UPDATE posts SET read_at=? WHERE source=? AND read_at IS NULL" + PublicationFilter,
-                Stamp(DateTimeOffset.UtcNow), source, dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc);
+            Run("UPDATE posts SET read_at=?,bulk_mark=? WHERE source=? AND read_at IS NULL AND arrival<=CAST(? AS INTEGER)" + PublicationFilter + SearchFilter,
+                Stamp(DateTimeOffset.UtcNow), batch, source, through.ToString(CultureInfo.InvariantCulture), dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc,
+                dates.Search, dates.Search, dates.Search);
             return long.Parse(Query("SELECT changes()")[0][0], CultureInfo.InvariantCulture);
         }
+    }
+
+    public long UndoFeedRead(string source, string batch)
+    {
+        lock (gate)
+        {
+            // A later manual read action or deletion takes priority over an old undo receipt.
+            Run("UPDATE posts SET read_at=NULL,bulk_mark=NULL WHERE source=? AND bulk_mark=?", source, batch);
+            return long.Parse(Query("SELECT changes()")[0][0], CultureInfo.InvariantCulture);
+        }
+    }
+
+    public bool CanUndoFeedRead(string source, string batch)
+    {
+        return Query("SELECT 1 FROM posts WHERE source=? AND bulk_mark=? LIMIT 1", source, batch).Count != 0;
     }
 
     public long ReadCount(string cutoff)
@@ -634,6 +761,26 @@ internal sealed class Store : IDisposable
     {
         lock (gate) { if (db != IntPtr.Zero) { sqlite3_close(db); db = IntPtr.Zero; } }
     }
+
+    private static void ContainsText(IntPtr context, int argc, IntPtr argv)
+    {
+        // SQLite's built-in case folding is ASCII-only. Match literal Unicode text without treating % or _ as syntax.
+        try
+        {
+            var text = Marshal.ReadIntPtr(argv);
+            var term = Marshal.ReadIntPtr(argv, IntPtr.Size);
+            var value = Text(sqlite3_value_text(text), sqlite3_value_bytes(text)) ?? "";
+            var query = Text(sqlite3_value_text(term), sqlite3_value_bytes(term)) ?? "";
+            sqlite3_result_int(context, value.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ? 1 : 0);
+        }
+        catch { sqlite3_result_int(context, 0); }
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void SqlFunction(IntPtr context, int argc, IntPtr argv);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_create_function_v2(IntPtr db, byte[] name, int argc, int encoding, IntPtr app, SqlFunction function, IntPtr step, IntPtr final, IntPtr destroy);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr sqlite3_value_text(IntPtr value);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_value_bytes(IntPtr value);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern void sqlite3_result_int(IntPtr context, int value);
 
     [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_open_v2(byte[] path, out IntPtr db, int flags, IntPtr vfs);
     [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_close(IntPtr db);

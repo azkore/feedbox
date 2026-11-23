@@ -56,8 +56,8 @@ internal sealed class Inbox : IDisposable
         {
             // Block alternate Host headers and mutations originating from another web page.
             if (request.Headers["Host"] != host) { Reply(context, 403, "Wrong host."); return; }
-            PublicationDates dates;
-            if (!PublicationDates.TryCreate(request.QueryString["from"], request.QueryString["to"], out dates))
+            ArticleFilter dates;
+            if (!ArticleFilter.TryCreate(request.QueryString["from"], request.QueryString["to"], out dates))
             { Reply(context, 400, "Choose a valid date range. From must be on or before To."); return; }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/")
             {
@@ -99,7 +99,7 @@ internal sealed class Inbox : IDisposable
             }
             var form = HttpUtility.ParseQueryString(Encoding.UTF8.GetString(bytes));
             if (form["token"] != token) { Reply(context, 403, "Reload the inbox and try again."); return; }
-            if (!PublicationDates.TryCreate(form["from"], form["to"], out dates))
+            if (!ArticleFilter.TryCreate(form["from"], form["to"], out dates))
             { Reply(context, 400, "Choose a valid date range. From must be on or before To."); return; }
             var group = GroupId(form["group"]);
             string result = "";
@@ -200,7 +200,7 @@ internal sealed class Inbox : IDisposable
         finally { context.Response.Close(); }
     }
 
-    private string Render(HttpListenerRequest request, PublicationDates dates)
+    private string Render(HttpListenerRequest request, ArticleFilter dates)
     {
         bool unread = request.QueryString["all"] != "1";
         bool oldest = request.QueryString["oldest"] == "1";
@@ -345,7 +345,7 @@ internal sealed class Inbox : IDisposable
         return html.Append("</main></body></html>").ToString();
     }
 
-    private string FeedOptions(string source, bool unread, bool oldest, int group, PublicationDates dates,
+    private string FeedOptions(string source, bool unread, bool oldest, int group, ArticleFilter dates,
         System.Collections.Generic.IEnumerable<FeedGroup> groups)
     {
         // One shared menu and dialog follow whichever feed button the reader opens.
@@ -416,7 +416,7 @@ internal sealed class Inbox : IDisposable
         html.Append("</div>");
     }
 
-    private string Form(string action, string fields, bool unread, string source, bool oldest, int group, PublicationDates dates)
+    private string Form(string action, string fields, bool unread, string source, bool oldest, int group, ArticleFilter dates)
     {
         return "<form class=inline method=post action='/" + action + "'><input type=hidden name=token value='" + token + "'>"
             + ViewFields(source, unread, oldest, group)
@@ -430,7 +430,7 @@ internal sealed class Inbox : IDisposable
             + (unread ? "" : "<input type=hidden name=all value=1>") + (oldest ? "<input type=hidden name=oldest value=1>" : "");
     }
 
-    private static string DateControl(string source, bool unread, bool oldest, int group, PublicationDates dates)
+    private static string DateControl(string source, bool unread, bool oldest, int group, ArticleFilter dates)
     {
         // Unset dates stay open-ended when new articles arrive or old ones are deleted.
         var label = dates.Active ? (dates.From == "" ? "Oldest" : dates.From) + " &#8211; " + (dates.To == "" ? "Newest" : dates.To) : "Dates";
@@ -448,7 +448,7 @@ internal sealed class Inbox : IDisposable
             + "><span aria-hidden=true>" + glyph + "</span></button>";
     }
 
-    private static string FeedLink(string source, string label, string selected, bool unread, long count, bool oldest, int group, int selectedGroup, PublicationDates dates)
+    private static string FeedLink(string source, string label, string selected, bool unread, long count, bool oldest, int group, int selectedGroup, ArticleFilter dates)
     {
         var link = "<a class='feed" + (source == "" && group > 0 ? " group-link" : "") + (IsRssKey(source) ? " rss-feed" : "")
             + "' href='" + E(ViewUrl(source, unread, oldest, group, dates)) + "' data-feed='" + E(source) + "' data-group='" + group + "'"
@@ -474,9 +474,9 @@ internal sealed class Inbox : IDisposable
         return int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out group) ? group : 0;
     }
 
-    private static string ViewUrl(string source, bool unread, bool oldest, int group, PublicationDates dates = null)
+    private static string ViewUrl(string source, bool unread, bool oldest, int group, ArticleFilter dates = null)
     {
-        dates = dates ?? PublicationDates.All;
+        dates = dates ?? ArticleFilter.All;
         return "/?feed=" + Uri.EscapeDataString(source) + (group > 0 ? "&group=" + group : "") + (unread ? "" : "&all=1") + (oldest ? "&oldest=1" : "")
             + (dates.From == "" ? "" : "&from=" + Uri.EscapeDataString(dates.From)) + (dates.To == "" ? "" : "&to=" + Uri.EscapeDataString(dates.To));
     }

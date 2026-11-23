@@ -20,7 +20,7 @@ try {
     }
 } finally { $archive.Dispose() }
 
-$flags = @('/nologo', '/platform:x64', '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.dll', '/r:System.Web.Extensions.dll', '/r:System.Net.Http.dll', '/r:System.Xml.Linq.dll')
+$flags = @('/nologo', '/platform:x64', '/codepage:65001', '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.dll', '/r:System.Web.Extensions.dll', '/r:System.Net.Http.dll', '/r:System.Xml.Linq.dll')
 $flags += '/r:' + (Join-Path $out 'Microsoft.Web.WebView2.Core.dll')
 $flags += '/r:' + (Join-Path $out 'Microsoft.Web.WebView2.WinForms.dll')
 $flags += '/resource:' + (Join-Path $PSScriptRoot 'collector.js') + ',collector.js'
@@ -31,7 +31,7 @@ $flags += '/resource:' + (Join-Path $PSScriptRoot 'inbox.css') + ',inbox.css'
 foreach ($asset in @('InterVariable.woff2','Merriweather-Regular.ttf','Inter-OFL.txt','Merriweather-OFL.txt')) {
     $flags += '/resource:' + (Join-Path $PSScriptRoot "fonts\$asset") + ',' + $asset
 }
-$shared = @('AppConfig.cs', 'Store.cs', 'Collector.cs', 'RssCollector.cs', 'Inbox.cs', 'ArticleBody.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$shared = @('AppConfig.cs', 'Store.cs', 'Collector.cs', 'RssCollector.cs', 'Inbox.cs', 'ArticleBody.cs', 'Opml.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 
 # Use the compiler already supplied by .NET Framework; no system-wide SDK or service is installed.
 & $compiler @flags '/target:winexe' ('/out:' + (Join-Path $out 'FeedInbox.exe')) @shared (Join-Path $PSScriptRoot 'App.cs')

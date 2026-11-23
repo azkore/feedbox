@@ -95,10 +95,11 @@ internal sealed class RssCollector : IDisposable
             var externalId = Value(entry, ns + (atom ? "id" : "guid"));
             var id = Store.RssKey(source + "\n" + (externalId == "" ? original.AbsoluteUri : externalId));
             if (posts.ContainsKey(id)) continue;
-            var published = atom ? Value(entry, ns + "published") : Value(entry, "pubDate");
-            if (published == "" && atom) published = Value(entry, ns + "updated");
+            var publication = atom ? Value(entry, ns + "published") : Value(entry, "pubDate");
+            var published = publication == "" && atom ? Value(entry, ns + "updated") : publication;
             DateTimeOffset created;
-            if (!DateTimeOffset.TryParse(published, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out created)) created = now;
+            bool hasDate = DateTimeOffset.TryParse(published, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out created);
+            if (!hasDate) created = now;
             var heading = Text(Value(entry, ns + "title"), 300);
             var content = atom ? entry.Element(ns + "content") ?? entry.Element(ns + "summary")
                 : entry.Element(XName.Get("encoded", "http://purl.org/rss/1.0/modules/content/")) ?? entry.Element("description");
@@ -107,6 +108,7 @@ internal sealed class RssCollector : IDisposable
             posts.Add(id, new Post { id = id, title = heading == "" ? original.AbsoluteUri : heading,
                 originalUrl = original.AbsoluteUri, path = "", author = Text(author, 120),
                 created = created.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
+                publicationKnown = hasDate && publication != "" && created <= now,
                 body = Text(content == null ? "" : content.HasElements ? string.Concat(content.Nodes()) : content.Value, 12000) });
         }
         if (posts.Count == 0 && entries.Any()) throw new InvalidDataException("The RSS feed has entries but no readable article links.");
