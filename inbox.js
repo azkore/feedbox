@@ -196,6 +196,7 @@
         const readerScroll = window.scrollY;
         const statusOpen = sameView && header.querySelector('.check-status').open;
         closeFeedMenu();
+        closeCountTip();
         nav.replaceChildren(...nextNav.children);
         panels.forEach((panel, i) => panel.replaceChildren(...nextPanels[i].children));
         main.replaceChildren(...nextMain.children);
@@ -293,6 +294,63 @@
             closeFeedMenu();
         }
     });
+
+    const countTip = document.querySelector('#sidebar-count-tip');
+    let pendingCountTip;
+
+    function closeCountTip() {
+        if (!pendingCountTip) return;
+        clearTimeout(pendingCountTip.timer);
+        pendingCountTip.controller.abort();
+        pendingCountTip.link.removeAttribute('aria-describedby');
+        pendingCountTip = null;
+        countTip.hidden = true;
+    }
+
+    function openCountTip(link) {
+        if (pendingCountTip?.link === link) return;
+        closeCountTip();
+        if (!link || menuButton) return;
+
+        // Crossing the sidebar should not send a request for every row along the way.
+        const state = { link, controller: new AbortController() };
+        pendingCountTip = state;
+        state.timer = setTimeout(async () => {
+            try {
+                const target = new URL(link.href);
+                const url = new URL('/sidebar-counts', location.href);
+                for (const field of ['feed', 'group']) if (target.searchParams.has(field)) url.searchParams.set(field, target.searchParams.get(field));
+                const response = await fetch(url, { signal: state.controller.signal });
+                if (!response.ok) return;
+                const counts = await response.json();
+                if (pendingCountTip !== state || !link.isConnected || link.closest('[hidden]')) return;
+
+                // Position outside the scrolling list and keep the popup inside the viewport.
+                const labels = ['marked', 'read', 'unread', 'total'];
+                countTip.textContent = labels.map(label => `${label}: ${counts[label].toLocaleString()}`).join('\n');
+                const anchor = link.getBoundingClientRect();
+                countTip.hidden = false;
+                countTip.style.left = `${Math.max(8, Math.min(anchor.right + 6, innerWidth - countTip.offsetWidth - 8))}px`;
+                countTip.style.top = `${Math.max(8, Math.min(anchor.top, innerHeight - countTip.offsetHeight - 8))}px`;
+                link.setAttribute('aria-describedby', countTip.id);
+            } catch { /* A cancelled or failed count request should not interrupt reading. */ }
+        }, 300);
+    }
+
+    // Delegate to the sidebar so both regular links and the sticky copies use the same tooltip.
+    nav.addEventListener('pointerover', event => {
+        if (event.pointerType !== 'touch') openCountTip(event.target.closest('a.feed'));
+    });
+    nav.addEventListener('pointerout', event => {
+        if (pendingCountTip?.link.contains(event.target) && !pendingCountTip.link.contains(event.relatedTarget)) closeCountTip();
+    });
+    nav.addEventListener('focusin', event => openCountTip(event.target.closest('a.feed')));
+    nav.addEventListener('focusout', closeCountTip);
+    nav.addEventListener('scroll', closeCountTip, { passive: true });
+    nav.addEventListener('pointerdown', closeCountTip);
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') closeCountTip(); });
+    window.addEventListener('resize', closeCountTip);
+    window.addEventListener('blur', closeCountTip);
 
     main.addEventListener('click', event => {
         if (event.target.closest('.cancel-feed-edit')) { main.querySelector('.feed-editor').close(); return; }

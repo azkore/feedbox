@@ -646,6 +646,17 @@ internal sealed class Store : IDisposable
             + (unread ? " AND read_at IS NULL" : ""), source, source)[0][0], CultureInfo.InvariantCulture);
     }
 
+    public long[] SidebarArticleCounts(string source, int group)
+    {
+        // Count the complete archive for this row, independently of the reading view's filters.
+        // Marked can overlap either read state; counting posts directly keeps the global total unique.
+        const string counts = "SELECT COUNT(CASE WHEN marked=1 THEN 1 END), COUNT(read_at), COUNT(*) FROM posts";
+        var result = source != "" ? Query(counts + " WHERE source=?", source)
+            : group != 0 ? Query(counts + " WHERE source IN (SELECT source FROM feed_group_members WHERE group_id=?)", group.ToString(CultureInfo.InvariantCulture))
+            : Query(counts);
+        return result[0].Select(value => long.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+    }
+
     // Measure the main SQLite file on disk, independently of the temporary WAL file.
     public long DatabaseFileBytes { get { return new FileInfo(databasePath).Length; } }
 

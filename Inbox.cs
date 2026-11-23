@@ -82,6 +82,14 @@ internal sealed class Inbox : IDisposable
                 Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival() }), "application/json; charset=utf-8");
                 return;
             }
+            if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/sidebar-counts")
+            {
+                // This request is made only when opening a sidebar tooltip.
+                var counts = store.SidebarArticleCounts(SourceName(query["feed"]), GroupId(query["group"]));
+                var json = new System.Web.Script.Serialization.JavaScriptSerializer();
+                Reply(context, 200, json.Serialize(new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2] }), "application/json; charset=utf-8");
+                return;
+            }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/rss-body")
             {
                 var id = query["id"] ?? "";
@@ -352,7 +360,7 @@ internal sealed class Inbox : IDisposable
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div>");
         }
         if (groups.Count > 0) html.Append("<div hidden>").Append(Form("move-feed", "", unread, source, oldest, group, dates)).Append("</div>");
-        html.Append("</nav><div class=sidebar-resize role=separator aria-label='Feed sidebar width' aria-orientation=vertical aria-valuemin=160 aria-valuemax=560 aria-valuenow=272 tabindex=0></div></aside>");
+        html.Append("</nav><div id=sidebar-count-tip role=tooltip hidden></div><div class=sidebar-resize role=separator aria-label='Feed sidebar width' aria-orientation=vertical aria-valuemin=160 aria-valuemax=560 aria-valuenow=272 tabindex=0></div></aside>");
 
         html.Append("<main><header class=feed-header><div class=heading><h1>").Append(E(title)).Append("</h1><div class=toolbar>");
         html.Append(StateControl(source, oldest, group, dates));
