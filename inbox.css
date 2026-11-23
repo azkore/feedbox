@@ -13,12 +13,13 @@
     --rule: #e2e4e3;
     --marked-border: #2563eb;
     --active: #ebedec;
+    --current-feed: #dceafb;
     --accent: #286d45;
     --sidebar-width: 272px;
     --bar-height: 48px;
 }
 @media (prefers-color-scheme: dark) {
-    :root { --paper:#171a19; --ink:#edf1ee; --body-ink:#edf1ee; --muted:#aebcb4; --nav:#202522; --rule:#3b463e; --marked-border:#60a5fa; --active:#303c34; --accent:#91d5ad; }
+    :root { --paper:#171a19; --ink:#edf1ee; --body-ink:#edf1ee; --muted:#aebcb4; --nav:#202522; --rule:#3b463e; --marked-border:#60a5fa; --active:#303c34; --current-feed:#294660; --accent:#91d5ad; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); }
@@ -38,15 +39,19 @@ aside { position: fixed; inset: 0 auto 0 0; width: var(--sidebar-width); backgro
 /* Let the controls scroll in a small window without borrowing space from the feed list. */
 .sidebar-tools-panel { position: absolute; top: 100%; left: 8px; width: clamp(240px, calc(100% - 16px), 320px); max-width: calc(100vw - 16px); max-height: calc(100dvh - var(--bar-height) - 12px); overflow: auto; background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 15px #0002; }
 aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 6px 7px; }
+/* Keep the shortcuts in one sticky block so the rules frame them together. */
+.feed-pins { position: sticky; top: 0; z-index: 1; background: var(--nav); border-block: 1px solid var(--rule); }
 .feed-sort-label:not([hidden]) { display: grid; gap: 5px; padding: 10px 12px; }
 .feed-sort { width: 100%; min-width: 0; font: inherit; }
 .feed { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 32px; padding: 4px 10px; border-radius: 5px; color: var(--ink); text-decoration: none; font-size: 13px; }
 .feed-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.feed[data-feed]:not([data-feed='']) .feed-label::before { content: 'r/'; display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 9px; background: #d33d14; color: white; font: 700 10px/16px system-ui, sans-serif; text-align: center; }
-.feed.rss-feed[data-feed] .feed-label::before { content: '◔'; background: #bc5914; }
-.feed[aria-current=page], .feed:hover { background: var(--active); }
+.feed:is([data-feed]:not([data-feed='']), [data-pinned-feed]) .feed-label::before { content: 'r/'; display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 9px; background: #d33d14; color: white; font: 700 10px/16px system-ui, sans-serif; text-align: center; }
+.feed.rss-feed:is([data-feed], [data-pinned-feed]) .feed-label::before { content: '◔'; background: #bc5914; }
+.feed:hover { background: var(--active); }
+.feed[aria-current=page], .feed[data-active-group], .feed-pins .feed { background: var(--current-feed); }
 .feed[aria-current=page] { font-weight: 650; }
 .count { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.feed[aria-current=page] .count, .feed[data-active-group] .count, .feed-pins .count { font-weight: 750; }
 .feed-row { position: relative; }
 .feed-row .feed-options { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); width: 24px; padding: 1px 0; visibility: hidden; border-color: transparent; background: var(--nav); }
 .feed-row:hover .feed-options, .feed-row:focus-within .feed-options, .feed-options[aria-expanded='true'] { visibility: visible; }
@@ -66,7 +71,8 @@ aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain
 .feed-group { margin-top: 8px; }
 .group-heading { display: flex; align-items: center; }
 .group-heading.feed-drop-target { outline: 1px solid var(--accent); border-radius: 5px; background: var(--active); }
-.group-link { flex: 1; min-width: 0; font-weight: 650; }
+.group-link { flex: 1; min-width: 0; }
+.group-link, .feed-pins .feed { font-weight: 650; }
 .group-toggle { display: grid; place-items: center; width: 20px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--muted); }
 .group-toggle::before { content: ''; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1px 1px 0; transform: rotate(-45deg); }
 .group-toggle[aria-expanded=true]::before { transform: translateY(-2px) rotate(45deg); }

@@ -320,8 +320,9 @@ internal sealed class Inbox : IDisposable
         var html = new StringBuilder("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Feed Inbox</title><link rel=stylesheet href='/inbox.css'><script src='/inbox.js' defer></script>");
         html.Append("<body data-unread='").Append(unread ? "1" : "0").Append("' data-flags='").Append(dates.Flags).Append("'><aside>");
         AppendSidebarTools(html, unread, source, oldest, group, dates);
-        html.Append("<nav aria-label='Feeds'>");
+        html.Append("<nav aria-label='Feeds'><div class=feed-pins>");
         html.Append(FeedLink("", "All feeds", source, unread, counts.Values.Sum(), oldest, 0, group, dates));
+        html.Append("<div class=pinned-group hidden></div><div class=pinned-feed hidden></div></div>");
         var grouped = new System.Collections.Generic.HashSet<string>();
         // Use the saved folder order and sort feeds by their displayed names.
         foreach (var folder in groups)
@@ -670,6 +671,7 @@ internal sealed class Inbox : IDisposable
             + "' href='" + E(ViewUrl(source, unread, oldest, group, dates)) + "' data-feed='" + E(source) + "' data-group='" + group + "'"
             + (source == "" ? " draggable=false" : " draggable=true")
             + (openDiscussion ? " data-open-discussion=1" : "")
+            + (source == "" && group > 0 && group == selectedGroup ? " data-active-group" : "")
             + (source == selected && group == selectedGroup ? " aria-current=page" : "") + "><span class=feed-label>" + E(label)
             + "</span><span class=count>" + count.ToString(CultureInfo.InvariantCulture) + "</span></a>";
         if (source == "") return link;

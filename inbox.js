@@ -583,7 +583,7 @@
 
     function activeFeedLinks() {
         // Both lists receive badge updates, but only the displayed list drives navigation.
-        const selector = feedSort.value === 'all-count' ? ':scope > a.feed, #flat-feeds a.feed' : 'a.feed';
+        const selector = feedSort.value === 'all-count' ? '.feed-pins > a.feed, #flat-feeds a.feed' : 'a.feed[data-feed]';
         return [...nav.querySelectorAll(selector)];
     }
 
@@ -628,6 +628,7 @@
             more.setAttribute('aria-expanded', String(expanded && zeroUnread > 0));
             more.textContent = expanded ? 'Show fewer feeds' : `${zeroUnread} more ${zeroUnread === 1 ? 'feed' : 'feeds'}`;
         }
+        syncSidebarPins();
     }
 
     feedSort.closest('label').hidden = false;
@@ -919,14 +920,48 @@
     }
     document.addEventListener('keydown', handleReaderKey);
 
-    // Scroll to the selected feed only if it is visible in the sidebar.
+    function syncSidebarPins() {
+        const view = new URL(displayedUrl);
+        const group = feedSort.value === 'all-count' ? null : nav.querySelector('.feed-group .group-link[data-active-group]');
+        const source = view.searchParams.get('feed');
+        const links = source ? activeFeedLinks().filter(link => link.dataset.feed === source) : [];
+        const selected = links.find(link => link.getAttribute('aria-current') === 'page');
+        const feed = selected || links[0];
+        // A feed opened without a group still has a shortcut when switching back to grouped sorting.
+        const feedUrl = feed && new URL(feed.href);
+        if (feedUrl && !selected && !view.searchParams.get('group')) feedUrl.searchParams.delete('group');
+        syncPinnedLink(nav.querySelector('.pinned-group'), group, group?.href);
+        syncPinnedLink(nav.querySelector('.pinned-feed'), feed, feedUrl?.href);
+    }
+
+    function syncPinnedLink(pin, link, href) {
+        pin.hidden = !link;
+        if (!link) return;
+        let shortcut = pin.firstElementChild;
+        if (shortcut?.href !== href) {
+            shortcut = link.cloneNode(true);
+            // The original link remains the source of counts and keyboard navigation.
+            shortcut.removeAttribute('aria-current');
+            if (shortcut.dataset.feed) shortcut.dataset.pinnedFeed = '';
+            delete shortcut.dataset.feed;
+            shortcut.draggable = false;
+            shortcut.href = href;
+            pin.replaceChildren(shortcut);
+        }
+        const count = link.querySelector('.count').textContent;
+        const badge = shortcut.querySelector('.count');
+        if (badge.textContent !== count) badge.textContent = count;
+    }
+
+    // Keep the selected row clear of the labels pinned over the top of the list.
     function revealCurrentFeed() {
         const currentFeed = activeFeedLinks().find(link => link.getAttribute('aria-current') === 'page');
-        if (!currentFeed || currentFeed.closest('[hidden]')) return;
+        if (!currentFeed || currentFeed.closest('[hidden], .feed-pins')) return;
         const row = currentFeed.getBoundingClientRect();
         const list = nav.getBoundingClientRect();
+        const top = nav.querySelector('.feed-pins').getBoundingClientRect().bottom;
         if (row.bottom > list.bottom) nav.scrollTop += row.bottom - list.bottom;
-        else if (row.top < list.top) nav.scrollTop -= list.top - row.top;
+        else if (row.top < top) nav.scrollTop -= top - row.top;
     }
     revealCurrentFeed();
 
