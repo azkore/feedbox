@@ -11,13 +11,14 @@
     --muted: #717573;
     --nav: #f6f6f6;
     --rule: #e2e4e3;
+    --marked-border: #2563eb;
     --active: #ebedec;
     --accent: #286d45;
     --sidebar-width: 272px;
     --bar-height: 48px;
 }
 @media (prefers-color-scheme: dark) {
-    :root { --paper:#171a19; --ink:#edf1ee; --body-ink:#edf1ee; --muted:#aebcb4; --nav:#202522; --rule:#3b463e; --active:#303c34; --accent:#91d5ad; }
+    :root { --paper:#171a19; --ink:#edf1ee; --body-ink:#edf1ee; --muted:#aebcb4; --nav:#202522; --rule:#3b463e; --marked-border:#60a5fa; --active:#303c34; --accent:#91d5ad; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); }
@@ -114,7 +115,9 @@ h1 { margin: 0; font-size: 15px; }
 
 /* Half of Feedly's 34px article inset, including the border. */
 article { margin: 0 0 14px; padding: 33px 16px 36px; border: 1px solid var(--rule); border-radius: 3px; scroll-margin-top: calc(var(--bar-height) + 8px); }
-/* Keep card borders uniform when J or K focuses an article. Links and buttons retain their focus rings. */
+/* Marked cards keep a blue border regardless of keyboard focus, without shifting the layout. */
+article[data-marked='1'] { border-color: var(--marked-border); box-shadow: inset 0 0 0 1px var(--marked-border); }
+/* Moving with J or K does not change the border. Links and buttons retain their focus rings. */
 article[data-current]:focus { outline: none; }
 .article-inner { min-width: 0; overflow-wrap: anywhere; }
 .article-inner h3 { margin: 0 0 8px; font-size: 26px; font-weight: 650; line-height: 32px; letter-spacing: -.025em; }
