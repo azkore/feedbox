@@ -40,18 +40,23 @@ internal sealed class FeedGroup
 
 internal sealed class ArticleFilter
 {
+    public const int Unread = 1, Read = 2, Unmarked = 4, Marked = 8, Inbox = Unread | Unmarked, Everything = 15;
     public static readonly ArticleFilter All = new ArticleFilter("", "", "", "", "");
     public readonly string From, To, StartUtc, EndUtc, Search;
+    public readonly int Flags;
     public bool Active { get { return From != "" || To != ""; } }
 
-    private ArticleFilter(string from, string to, string startUtc, string endUtc, string search)
+    private ArticleFilter(string from, string to, string startUtc, string endUtc, string search, int flags = -1)
     {
         From = from;
         To = to;
         StartUtc = startUtc;
         EndUtc = endUtc;
         Search = search;
+        Flags = flags;
     }
+
+    public ArticleFilter WithFlags(int flags) { return new ArticleFilter(From, To, StartUtc, EndUtc, Search, flags); }
 
     public static bool TryCreate(string from, string to, out ArticleFilter dates, string search = null)
     {
@@ -80,6 +85,13 @@ internal sealed class Store : IDisposable
 {
     private const string PublicationFilter = " AND (?='' OR published>=?) AND (?='' OR published<?)";
     private const string SearchFilter = " AND (?='' OR inbox_contains(title,?) OR inbox_contains(body,?))";
+    private static string StateFilter(int flags)
+    {
+        // Each pair contributes an independent requirement. An unchecked pair matches no articles.
+        if ((flags & 3) == 0 || (flags & 12) == 0) return " AND 0";
+        return ((flags & 3) == ArticleFilter.Unread ? " AND read_at IS NULL" : (flags & 3) == ArticleFilter.Read ? " AND read_at IS NOT NULL" : "")
+            + ((flags & 12) == ArticleFilter.Unmarked ? " AND marked=0" : (flags & 12) == ArticleFilter.Marked ? " AND marked=1" : "");
+    }
     private static readonly SqlFunction ContainsFunction = ContainsText;
     private readonly object gate = new object();
     private readonly string databasePath;
@@ -96,7 +108,7 @@ internal sealed class Store : IDisposable
         Check(sqlite3_busy_timeout(db, 5000));
         Run("PRAGMA journal_mode=WAL");
         var version = int.Parse(Query("PRAGMA user_version")[0][0], CultureInfo.InvariantCulture);
-        if (version < 0 || version > 13) throw new InvalidOperationException("Unsupported database version.");
+        if (version < 0 || version > 14) throw new InvalidOperationException("Unsupported database version.");
         Transaction(() =>
         {
             Run(@"CREATE TABLE IF NOT EXISTS sources (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1,
@@ -187,6 +199,12 @@ internal sealed class Store : IDisposable
                 Run("ALTER TABLE posts ADD COLUMN discussion TEXT NOT NULL DEFAULT ''");
                 Run("ALTER TABLE sources ADD COLUMN open_discussion INTEGER NOT NULL DEFAULT 0");
                 Run("PRAGMA user_version=13");
+            }
+            if (version < 14)
+            {
+                Run("ALTER TABLE posts ADD COLUMN marked INTEGER NOT NULL DEFAULT 0");
+                Run("CREATE INDEX posts_marked ON posts(published,id) WHERE marked=1");
+                Run("PRAGMA user_version=14");
             }
         });
     }
@@ -617,7 +635,7 @@ internal sealed class Store : IDisposable
     {
         // Use one SQLite snapshot for all badges, including feeds that appear in multiple groups.
         dates = dates ?? ArticleFilter.All;
-        return Query("SELECT source,count(*) FROM posts WHERE read_at IS NULL" + PublicationFilter + SearchFilter + " GROUP BY source",
+        return Query("SELECT source,count(*) FROM posts WHERE 1" + StateFilter(dates.Flags < 0 ? ArticleFilter.Inbox : dates.Flags) + PublicationFilter + SearchFilter + " GROUP BY source",
             dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc, dates.Search, dates.Search, dates.Search)
             .ToDictionary(row => row[0], row => long.Parse(row[1], CultureInfo.InvariantCulture));
     }
@@ -639,9 +657,9 @@ internal sealed class Store : IDisposable
         var comparison = oldest ? ">" : "<";
         var order = oldest ? " ASC" : " DESC";
         var groupId = group.ToString(CultureInfo.InvariantCulture);
-        var sql = "SELECT id,source,title,original_url,published,read_at,author,body,image,CASE WHEN source LIKE 'rss\\_%' ESCAPE '\\' THEN CASE WHEN COALESCE(content,'')<>'' THEN '1' ELSE '' END ELSE content END,arrival,discussion FROM posts WHERE (?='' OR source=?)"
+        var sql = "SELECT id,source,title,original_url,published,read_at,author,body,image,CASE WHEN source LIKE 'rss\\_%' ESCAPE '\\' THEN CASE WHEN COALESCE(content,'')<>'' THEN '1' ELSE '' END ELSE content END,arrival,discussion,marked FROM posts WHERE (?='' OR source=?)"
             + " AND (?='0' OR source IN (SELECT source FROM feed_group_members WHERE group_id=?))"
-            + (unread ? " AND read_at IS NULL" : "") + PublicationFilter + SearchFilter;
+             + StateFilter(dates.Flags < 0 ? (unread ? ArticleFilter.Unread | ArticleFilter.Unmarked | ArticleFilter.Marked : ArticleFilter.Everything) : dates.Flags) + PublicationFilter + SearchFilter;
         var args = new List<string> { source, source, groupId, groupId, dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc,
             dates.Search, dates.Search, dates.Search };
         if (since >= 0)
@@ -677,9 +695,23 @@ internal sealed class Store : IDisposable
     {
         lock (gate)
         {
-            Run("UPDATE posts SET read_at=?,bulk_mark=NULL WHERE id=?", read ? Stamp(DateTimeOffset.UtcNow) : null, id);
+            Run("UPDATE posts SET read_at=?,bulk_mark=NULL WHERE id=?" + (read ? " AND marked=0" : ""), read ? Stamp(DateTimeOffset.UtcNow) : null, id);
             // A stale tab cannot restore a post that has already been removed.
             return Query("SELECT changes()")[0][0] == "1";
+        }
+    }
+
+    public string[] UpdateMark(string id, bool opened, bool toggle = false)
+    {
+        lock (gate)
+        {
+            // Opening an unmarked item must not change its existing read state.
+            if (opened) Run("UPDATE posts SET marked=0,read_at=?,bulk_mark=NULL WHERE id=? AND marked=1", Stamp(DateTimeOffset.UtcNow), id);
+            // Use the persisted mark, so another tab cannot turn a toggle into the wrong action.
+            else if (toggle) Run("UPDATE posts SET marked=1-marked,read_at=CASE WHEN marked=1 THEN ? ELSE NULL END,bulk_mark=NULL WHERE id=?",
+                Stamp(DateTimeOffset.UtcNow), id);
+            else Run("UPDATE posts SET marked=1,read_at=NULL,bulk_mark=NULL WHERE id=?", id);
+            return Query("SELECT marked,read_at FROM posts WHERE id=?", id).SingleOrDefault();
         }
     }
 
@@ -689,7 +721,8 @@ internal sealed class Store : IDisposable
         dates = dates ?? ArticleFilter.All;
         lock (gate)
         {
-            Run("UPDATE posts SET read_at=?,bulk_mark=? WHERE source=? AND read_at IS NULL AND arrival<=CAST(? AS INTEGER)" + PublicationFilter + SearchFilter,
+            if (dates.Flags >= 0 && (dates.Flags & ArticleFilter.Inbox) != ArticleFilter.Inbox) return 0;
+            Run("UPDATE posts SET read_at=?,bulk_mark=? WHERE source=? AND marked=0 AND read_at IS NULL AND arrival<=CAST(? AS INTEGER)" + PublicationFilter + SearchFilter,
                 Stamp(DateTimeOffset.UtcNow), batch, source, through.ToString(CultureInfo.InvariantCulture), dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc,
                 dates.Search, dates.Search, dates.Search);
             return long.Parse(Query("SELECT changes()")[0][0], CultureInfo.InvariantCulture);
@@ -713,7 +746,7 @@ internal sealed class Store : IDisposable
 
     public long ReadCount(string cutoff)
     {
-        return long.Parse(Query("SELECT count(*) FROM posts WHERE read_at <= ?", cutoff)[0][0], CultureInfo.InvariantCulture);
+        return long.Parse(Query("SELECT count(*) FROM posts WHERE marked=0 AND read_at <= ?", cutoff)[0][0], CultureInfo.InvariantCulture);
     }
 
     public Tuple<long, bool> DeleteReadAndCompact(string cutoff)
@@ -725,8 +758,8 @@ internal sealed class Store : IDisposable
             {
                 // Commit the deletion and deduplication IDs together. Unread rows are outside both statements.
                 deleted = ReadCount(cutoff);
-                Run("INSERT OR IGNORE INTO deleted_posts(id) SELECT id FROM posts WHERE read_at <= ?", cutoff);
-                Run("DELETE FROM posts WHERE read_at <= ?", cutoff);
+                Run("INSERT OR IGNORE INTO deleted_posts(id) SELECT id FROM posts WHERE marked=0 AND read_at <= ?", cutoff);
+                Run("DELETE FROM posts WHERE marked=0 AND read_at <= ?", cutoff);
             });
             if (deleted == 0) return Tuple.Create(0L, true);
 

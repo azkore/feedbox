@@ -15,7 +15,10 @@
     // Use the view's filters as the bookmark key, independent of receipts and pagination URLs.
     function readingKey(url) {
         const params = new URL(url).searchParams;
-        return 'feed-inbox.position:' + JSON.stringify(['feed', 'group', 'all', 'oldest', 'from', 'to', 'q'].map(key => params.get(key) || ''));
+        const flags = params.get('flags') ?? (params.get('all') === '1' ? '15' : '5');
+        // Keep bookmarks made before the checkbox filter replaced Unread and View all articles.
+        const state = flags === '5' ? '' : flags === '15' ? '1' : 'flags:' + flags;
+        return 'feed-inbox.position:' + JSON.stringify(['feed', 'group', 'all', 'oldest', 'from', 'to', 'q'].map(key => key === 'all' ? state : params.get(key) || ''));
     }
 
     function readingPosition(url) {
@@ -101,6 +104,7 @@
             // Periodic counts must use the same dates as the rendered articles.
             const url = new URL('/unread-counts', displayedUrl);
             const filter = new URL(displayedUrl).searchParams;
+            url.searchParams.set('flags', document.body.dataset.flags);
             for (const bound of ['from', 'to', 'q']) if (filter.has(bound)) url.searchParams.set(bound, filter.get(bound));
             const response = await fetch(url);
             if (!response.ok) return;
@@ -129,7 +133,8 @@
         const edge = more?.href;
         const url = new URL('/new-articles', displayedUrl);
         const filter = new URL(displayedUrl).searchParams;
-        for (const key of ['feed', 'group', 'all', 'oldest', 'from', 'to', 'q']) if (filter.has(key)) url.searchParams.set(key, filter.get(key));
+        url.searchParams.set('flags', document.body.dataset.flags);
+        for (const key of ['feed', 'group', 'oldest', 'from', 'to', 'q']) if (filter.has(key)) url.searchParams.set(key, filter.get(key));
         if (edge) {
             const boundary = new URL(edge).searchParams;
             for (const key of ['before', 'id']) url.searchParams.set(key, boundary.get(key));
@@ -195,6 +200,7 @@
         main.replaceChildren(...nextMain.children);
         setReaderTail(0);
         document.body.dataset.unread = page.body.dataset.unread;
+        document.body.dataset.flags = page.body.dataset.flags;
         entries = main.querySelector('#entries');
         header = main.querySelector('.feed-header');
         status = main.querySelector('#key-status');
@@ -395,9 +401,16 @@
 
     document.addEventListener('submit', async event => {
         const form = event.target;
-        if (form.closest('.date-filter, .archive-search')) {
+        if (form.closest('.date-filter, .archive-search, .state-filter')) {
             event.preventDefault();
             const params = new URLSearchParams(new FormData(form));
+            if (form.closest('.state-filter')) {
+                // Keep the checkbox pairs independent and store the result in the view URL.
+                const flags = params.getAll('state').reduce((mask, value) => mask | Number(value), 0);
+                params.delete('state');
+                params.delete('apply-flags');
+                if (flags !== 5) params.set('flags', flags);
+            }
             // Changing dates starts a new reading stream; its first URL has no pagination cursor.
             for (const bound of ['from', 'to', 'q']) if (!params.get(bound)?.trim()) params.delete(bound);
             navigate(form.action + '?' + params);
@@ -633,7 +646,7 @@
     }
 
     async function setRead(row, read) {
-        if ((row.dataset.read === '1') === read) return;
+        if ((row.dataset.read === '1') === read || (read && row.dataset.marked === '1')) return;
         // Persist the action first. Leave the row in place for K or undo without disturbing the scroll position.
         const form = row.querySelector('form[action="/read"]');
         const fields = new URLSearchParams(new FormData(form));
@@ -641,12 +654,25 @@
         fields.set('mark', read ? 'read' : 'unread');
         const response = await fetch(form.action, { method: 'POST', body: fields });
         if (response.status !== 204) throw new Error(await response.text() || 'Could not update this post.');
+        updateArticleState(row, read, row.dataset.marked === '1');
+    }
+
+    function inView(read, marked) {
+        const flags = Number(document.body.dataset.flags);
+        return Boolean((flags & (read ? 2 : 1)) && (flags & (marked ? 8 : 4)));
+    }
+
+    function updateArticleState(row, read, marked) {
         readRevision++;
         if (!row.isConnected) return;
+        const delta = Number(inView(read, marked)) - Number(inView(row.dataset.read === '1', row.dataset.marked === '1'));
         row.dataset.read = read ? '1' : '0';
-        const button = form.querySelector('button');
+        row.dataset.marked = marked ? '1' : '0';
+        row.querySelector('.marked-label').hidden = !marked;
+        const button = row.querySelector('form[action="/read"] button');
         button.value = read ? 'unread' : 'read';
         button.textContent = read ? 'Mark unread' : 'Mark read';
+        if (!delta) return;
         for (const feed of document.querySelectorAll('.feed[data-feed]')) {
             if (feed.dataset.feed && feed.dataset.feed !== row.dataset.source) continue;
             // A post contributes once to the total and once to each folder containing its feed.
@@ -655,9 +681,42 @@
                 if (!members.some(member => member.dataset.feed === row.dataset.source)) continue;
             }
             const count = feed.querySelector('.count');
-            count.textContent = Math.max(0, Number(count.textContent) + (read ? -1 : 1));
+            count.textContent = Math.max(0, Number(count.textContent) + delta);
         }
         updateMoreFeeds();
+    }
+
+    async function changeMark(row, action) {
+        const fields = new URLSearchParams(new FormData(row.querySelector('form[action="/read"]')));
+        fields.set('action', action);
+        const response = await fetch('/mark-article', { method: 'POST', body: fields });
+        if (!response.ok) throw new Error(await response.text() || 'Could not update the mark.');
+        const state = await response.json();
+        updateArticleState(row, Boolean(state.read), Boolean(state.marked));
+    }
+
+    async function advanceAfterMark(row) {
+        const fits = inView(row.dataset.read === '1', row.dataset.marked === '1');
+        let articles = rows();
+        const index = articles.indexOf(row);
+        const more = document.querySelector('#more');
+        if (!articles[index + 1] && more) {
+            await loadMore(more);
+            articles = rows();
+        }
+        if (!row.isConnected || navigation) return;
+        // Remove items that no longer fit, and remove their date heading only if it is now empty.
+        const next = articles[index + 1], previous = articles[index - 1];
+        if (!fits) {
+            const heading = row.previousElementSibling;
+            if (heading?.matches('h2') && !row.nextElementSibling?.matches('article')) heading.remove();
+            if (selected === row) selected = null;
+            row.remove();
+        }
+        if (next) select(next);
+        else if (!fits && previous) select(previous);
+        else if (fits) alignArticle(row);
+        if (!next) status.textContent = 'End of this view.';
     }
 
     function mountRssBody(frame) {
@@ -704,11 +763,12 @@
         if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.ctrlKey || event.metaKey
             || event.target.closest?.('input,textarea,select,[contenteditable=true],.feed-editor,.feed-menu')) return;
         const key = event.key.toLowerCase();
-        if (!['j', 'k', 'v'].includes(key) || (key === 'v' && event.shiftKey)) return;
+        const mark = event.code === 'NumpadAdd';
+        if ((!mark && !['j', 'k', 'v'].includes(key)) || (key === 'v' && event.shiftKey)) return;
         event.preventDefault();
         if (busy || navigation) return;
         status.textContent = '';
-        if (event.shiftKey) { moveFeed(key === 'j' ? 1 : -1); return; }
+        if (!mark && event.shiftKey) { moveFeed(key === 'j' ? 1 : -1); return; }
 
         const articles = rows();
         const current = frameRow && onScreen(frameRow) ? frameRow : selected && onScreen(selected) ? selected : null;
@@ -716,9 +776,27 @@
         if (!current) select(articles.find(onScreen) || articles[0]);
         else if (current !== selected) select(current, false);
         if (!selected) return;
-        if (key === 'v') {
-            const target = selected.dataset.discussion || selected.querySelector('a.original')?.href;
-            if (target) window.open(target, '_blank', 'noopener');
+        if (mark || key === 'v') {
+            const row = selected;
+            busy = true;
+            try {
+                if (mark) {
+                    await changeMark(row, 'toggle');
+                    // Keep the same target when both states are visible, so a second press reverses the first.
+                    if (row.isConnected && !navigation && !inView(row.dataset.read === '1', row.dataset.marked === '1')) await advanceAfterMark(row);
+                } else {
+                    const target = row.dataset.discussion || row.querySelector('a.original')?.href;
+                    if (!target) return;
+                    // Keep a handle just long enough to tell whether the browser allowed the tab to open.
+                    const tab = window.open('about:blank', '_blank');
+                    if (!tab) { status.textContent = 'Allow pop-ups to open this article.'; return; }
+                    tab.opener = null;
+                    tab.location.replace(target);
+                    await changeMark(row, 'opened');
+                    if (row.isConnected && !navigation && !inView(row.dataset.read === '1', row.dataset.marked === '1')) await advanceAfterMark(row);
+                }
+            } catch (error) { showError(error); }
+            finally { busy = false; }
             return;
         }
         if (!current) return;

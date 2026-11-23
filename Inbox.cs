@@ -64,6 +64,7 @@ internal sealed class Inbox : IDisposable
             ArticleFilter dates;
             if (!ArticleFilter.TryCreate(query["from"], query["to"], out dates, query["q"]))
             { Reply(context, 400, "Choose a valid date range and a search of at most 120 characters."); return; }
+            dates = dates.WithFlags(ViewFlags(query));
             if (request.HttpMethod == "GET" && (request.Url.AbsolutePath == "/" || request.Url.AbsolutePath == "/new-articles"))
             {
                 Reply(context, 200, Render(request.Url.AbsolutePath, query, dates));
@@ -122,6 +123,7 @@ internal sealed class Inbox : IDisposable
             if (form["token"] != token) { Reply(context, 403, "Reload the inbox and try again."); return; }
             if (!ArticleFilter.TryCreate(form["from"], form["to"], out dates, form["q"]))
             { Reply(context, 400, "Choose a valid date range and a search of at most 120 characters."); return; }
+            dates = dates.WithFlags(ViewFlags(form));
             var group = GroupId(form["group"]);
             string result = "";
 
@@ -201,9 +203,22 @@ internal sealed class Inbox : IDisposable
                 case "/read":
                     var id = form["id"] ?? "";
                     if (!ArticleId(id)) { Reply(context, 400, "Invalid post ID."); return; }
-                    if (!store.SetRead(id, form["mark"] != "unread")) { Reply(context, 404, "This article is no longer in the inbox."); return; }
+                    if (!store.SetRead(id, form["mark"] != "unread"))
+                    {
+                        if (store.PublishedAt(id) == "") Reply(context, 404, "This article is no longer in the inbox.");
+                        else Reply(context, 409, "This article is marked. Use Numpad + or open it with V to mark it read.");
+                        return;
+                    }
                     if (form["inline"] == "1") { context.Response.StatusCode = 204; return; }
                     break;
+                case "/mark-article":
+                    var article = form["id"] ?? "";
+                    var action = form["action"];
+                    if (!ArticleId(article) || (action != "toggle" && action != "opened" && action != "mark")) { Reply(context, 400, "Invalid article or action."); return; }
+                    var state = store.UpdateMark(article, action == "opened", toggle: action == "toggle");
+                    if (state == null) { Reply(context, 404, "This article is no longer in the inbox."); return; }
+                    Reply(context, 200, "{\"marked\":" + state[0] + ",\"read\":" + (state[1] == null ? "0" : "1") + "}", "application/json; charset=utf-8");
+                    return;
                 case "/mark-feed-read":
                     // No group or All feeds selection can trigger a bulk read action.
                     var feed = SourceName(form["feed"]);
@@ -265,7 +280,7 @@ internal sealed class Inbox : IDisposable
 
     private string Render(string path, NameValueCollection query, ArticleFilter dates)
     {
-        bool unread = query["all"] != "1";
+        bool unread = (dates.Flags & ArticleFilter.Read) == 0;
         bool oldest = query["oldest"] == "1";
         bool paused = store.IsPaused;
         var source = SourceName(query["feed"]);
@@ -303,7 +318,7 @@ internal sealed class Inbox : IDisposable
 
         // Keep feed navigation independent of the centered reading stream.
         var html = new StringBuilder("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Feed Inbox</title><link rel=stylesheet href='/inbox.css'><script src='/inbox.js' defer></script>");
-        html.Append("<body data-unread='").Append(unread ? "1" : "0").Append("'><aside><strong class=brand>Feed Inbox</strong><nav aria-label='Feeds'>");
+        html.Append("<body data-unread='").Append(unread ? "1" : "0").Append("' data-flags='").Append(dates.Flags).Append("'><aside><strong class=brand>Feed Inbox</strong><nav aria-label='Feeds'>");
         html.Append(FeedLink("", "All feeds", source, unread, counts.Values.Sum(), oldest, 0, group, dates));
         var grouped = new System.Collections.Generic.HashSet<string>();
         // Use the saved folder order and sort feeds by their displayed names.
@@ -352,7 +367,7 @@ internal sealed class Inbox : IDisposable
         html.Append("</details><div class=sidebar-resize role=separator aria-label='Feed sidebar width' aria-orientation=vertical aria-valuemin=160 aria-valuemax=560 aria-valuenow=272 tabindex=0></div></aside>");
 
         html.Append("<main><header class=feed-header><div class=heading><h1>").Append(E(title)).Append("</h1><div class=toolbar>");
-        html.Append("<a href='").Append(E(ViewUrl(source, true, oldest, group, dates))).Append("'").Append(unread ? " aria-current=page" : "").Append(">Unread</a><a href='").Append(E(ViewUrl(source, false, oldest, group, dates))).Append("'").Append(unread ? "" : " aria-current=page").Append(">View all articles</a>");
+        html.Append(StateControl(source, oldest, group, dates));
         html.Append("<a class=sort href='").Append(E(ViewUrl(source, unread, !oldest, group, dates))).Append("' title='Switch to ")
             .Append(oldest ? "newest first'>Oldest first" : "oldest first'>Newest first").Append("</a>");
         html.Append(DateControl(source, unread, oldest, group, dates));
@@ -362,7 +377,7 @@ internal sealed class Inbox : IDisposable
         if (byName.ContainsKey(source))
         {
             html.Append(Form("check-feed", IconButton("&#x21BB;", "Check this feed"), unread, source, oldest, group, dates));
-            html.Append(Form("mark-feed-read", "<input type=hidden name=through value='" + arrival.ToString(CultureInfo.InvariantCulture) + "'>"
+            if ((dates.Flags & ArticleFilter.Inbox) == ArticleFilter.Inbox) html.Append(Form("mark-feed-read", "<input type=hidden name=through value='" + arrival.ToString(CultureInfo.InvariantCulture) + "'>"
                 + IconButton("&#x2713;", "Mark all as read", tooltip: dates.Active || dates.Search != "" ? "Mark all matching articles as read in this feed" : "Mark all as read in this feed"), unread, source, oldest, group, dates));
         }
         else if (!paused) html.Append(Form("check", IconButton("&#x21BB;", "Check now"), unread, source, oldest, group, dates));
@@ -439,7 +454,7 @@ internal sealed class Inbox : IDisposable
                 html.Append("' data-discussion='").Append(E(discussion.AbsoluteUri));
             html
                 .Append("' data-published='").Append(E(post[4])).Append("' data-day='").Append(E(day))
-                .Append("' data-read='").Append(post[5] == null ? "0" : "1").Append("'><div class=article-inner><h3>");
+                .Append("' data-read='").Append(post[5] == null ? "0" : "1").Append("' data-marked='").Append(post[12]).Append("'><div class=article-inner><h3>");
             Uri original;
             if (TryWebUrl(post[3], out original))
                 html.Append("<a class=original target=_blank rel=noopener href='").Append(E(original.AbsoluteUri)).Append("'>").Append(E(post[2])).Append("</a>");
@@ -449,6 +464,7 @@ internal sealed class Inbox : IDisposable
             html.Append(" &middot; ").Append(E(date)).Append("</small><div class=article-actions>");
             html.Append(Form("read", "<input type=hidden name=id value='" + E(post[0]) + "'>"
                  + (post[5] == null ? "<button name=mark value=read>Mark read</button>" : "<button name=mark value=unread>Mark unread</button>"), unread, source, oldest, group, dates));
+            html.Append("<span class=marked-label").Append(post[12] == "1" ? "" : " hidden").Append(">Marked</span>");
             html.Append("</div>");
 
             // Publisher HTML lives in a separate document, without access to the inbox's styles or app controls.
@@ -559,14 +575,42 @@ internal sealed class Inbox : IDisposable
     private string Form(string action, string fields, bool unread, string source, bool oldest, int group, ArticleFilter dates)
     {
         return "<form class=inline method=post action='/" + action + "'><input type=hidden name=token value='" + token + "'>"
-            + ViewFields(source, unread, oldest, group)
+             + ViewFields(source, unread, oldest, group, dates.Flags)
             + DateFields(dates) + SearchField(dates) + fields + "</form>";
     }
 
-    private static string ViewFields(string source, bool unread, bool oldest, int group)
+    private static string ViewFields(string source, bool unread, bool oldest, int group, int flags = -1)
     {
         return "<input type=hidden name=feed value='" + E(source) + "'>" + (group == 0 ? "" : "<input type=hidden name=group value='" + group + "'>")
-            + (unread ? "" : "<input type=hidden name=all value=1>") + (oldest ? "<input type=hidden name=oldest value=1>" : "");
+             + (flags >= 0 ? "<input type=hidden name=flags value='" + flags + "'>" : unread ? "" : "<input type=hidden name=all value=1>")
+             + (oldest ? "<input type=hidden name=oldest value=1>" : "");
+    }
+
+    private static int ViewFlags(NameValueCollection values)
+    {
+        int flags;
+        // Accept the old all=1 links as well as the checkbox form and canonical flags links.
+        if (int.TryParse(values["flags"], NumberStyles.None, CultureInfo.InvariantCulture, out flags) && flags >= 0 && flags <= ArticleFilter.Everything)
+            return flags;
+        if (values["apply-flags"] != "1") return values["all"] == "1" ? ArticleFilter.Everything : ArticleFilter.Inbox;
+        flags = 0;
+        foreach (var value in values.GetValues("state") ?? new string[0])
+        {
+            int choice;
+            if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out choice) && (choice == 1 || choice == 2 || choice == 4 || choice == 8)) flags |= choice;
+        }
+        return flags;
+    }
+
+    private static string StateControl(string source, bool oldest, int group, ArticleFilter dates)
+    {
+        Func<int, string, string> checkbox = (flag, label) => "<label><input type=checkbox name=state value='" + flag + "'"
+            + ((dates.Flags & flag) != 0 ? " checked" : "") + "> " + label + "</label>";
+        return "<details class=state-filter><summary>Articles</summary><form action='/' method=get>"
+            + "<input type=hidden name=apply-flags value=1>" + ViewFields(source, true, oldest, group) + DateFields(dates) + SearchField(dates)
+            + "<div class=state-columns><fieldset aria-label='Mark status'>" + checkbox(ArticleFilter.Marked, "Marked") + checkbox(ArticleFilter.Unmarked, "Unmarked")
+            + "</fieldset><fieldset aria-label='Read status'>" + checkbox(ArticleFilter.Read, "Read") + checkbox(ArticleFilter.Unread, "Unread")
+            + "</fieldset></div><button>Apply</button></form></details>";
     }
 
     private static string DateFields(ArticleFilter dates)
@@ -584,9 +628,9 @@ internal sealed class Inbox : IDisposable
     {
         ArticleFilter withoutSearch;
         ArticleFilter.TryCreate(dates.From, dates.To, out withoutSearch);
-        return "<form class=archive-search action='/' method=get>" + ViewFields(source, unread, oldest, group) + DateFields(dates)
+        return "<form class=archive-search action='/' method=get>" + ViewFields(source, unread, oldest, group, dates.Flags) + DateFields(dates)
             + "<input type=search maxlength=120 name=q aria-label='Search titles and text' placeholder='Search' value='" + E(dates.Search) + "'>"
-            + (dates.Search == "" ? "" : " <a class=clear-search href='" + E(ViewUrl(source, unread, oldest, group, withoutSearch)) + "'>Clear search</a>") + "</form>";
+            + (dates.Search == "" ? "" : " <a class=clear-search href='" + E(ViewUrl(source, unread, oldest, group, withoutSearch.WithFlags(dates.Flags))) + "'>Clear search</a>") + "</form>";
     }
 
     private static string DateControl(string source, bool unread, bool oldest, int group, ArticleFilter dates)
@@ -596,11 +640,11 @@ internal sealed class Inbox : IDisposable
         ArticleFilter withoutDates;
         ArticleFilter.TryCreate("", "", out withoutDates, dates.Search);
         return "<details class=date-filter><summary title='Filter all feeds by publication date'>" + label + "</summary>"
-            + "<form action='/' method=get>" + ViewFields(source, unread, oldest, group) + SearchField(dates)
+            + "<form action='/' method=get>" + ViewFields(source, unread, oldest, group, dates.Flags) + SearchField(dates)
             + "<label>From <input type=date name=from value='" + E(dates.From) + "'></label>"
             + "<label>To <input type=date name=to value='" + E(dates.To) + "'></label>"
             + "<small>Leave blank for oldest or newest.</small><div class=date-actions><button>Apply</button>"
-            + "<a class=date-clear href='" + E(ViewUrl(source, unread, oldest, group, withoutDates)) + "'>Clear</a></div></form></details>";
+            + "<a class=date-clear href='" + E(ViewUrl(source, unread, oldest, group, withoutDates.WithFlags(dates.Flags))) + "'>Clear</a></div></form></details>";
     }
 
     private static string IconButton(string glyph, string label, string attributes = "", string tooltip = null)
@@ -640,7 +684,8 @@ internal sealed class Inbox : IDisposable
     private static string ViewUrl(string source, bool unread, bool oldest, int group, ArticleFilter dates = null)
     {
         dates = dates ?? ArticleFilter.All;
-        return "/?feed=" + Uri.EscapeDataString(source) + (group > 0 ? "&group=" + group : "") + (unread ? "" : "&all=1") + (oldest ? "&oldest=1" : "")
+        var flagQuery = dates.Flags < 0 ? (unread ? "" : "&all=1") : dates.Flags == ArticleFilter.Inbox ? "" : "&flags=" + dates.Flags;
+        return "/?feed=" + Uri.EscapeDataString(source) + (group > 0 ? "&group=" + group : "") + flagQuery + (oldest ? "&oldest=1" : "")
             + (dates.From == "" ? "" : "&from=" + Uri.EscapeDataString(dates.From)) + (dates.To == "" ? "" : "&to=" + Uri.EscapeDataString(dates.To))
             + (dates.Search == "" ? "" : "&q=" + Uri.EscapeDataString(dates.Search));
     }

@@ -154,6 +154,7 @@ internal static class Tests
             TestRss();
             TestAppConfig();
             TestReadingTools();
+            TestMarkedArticles();
             TestInterruptedResponse();
             TestOpml();
         }
@@ -188,6 +189,57 @@ internal static class Tests
                 string html;
                 Expect(Request(server.Url, "GET", null, null, out html) == 200 && html.Contains("Feed Inbox"),
                     "the inbox still serves requests after clients reset a response in progress");
+            }
+        }
+        finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(file + suffix)) File.Delete(file + suffix); }
+    }
+
+    private static void TestMarkedArticles()
+    {
+        var file = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            var saved = Post("marked1", "Saved article");
+            var ordinary = Post("marked2", "Ordinary article");
+            var read = Post("marked3", "Read article");
+            using (var store = new Store(file))
+            using (var server = new Inbox(store, 55000 + new Random().Next(5000), name => System.Threading.Tasks.Task.FromResult("")))
+            {
+                store.ImportHistoricalPosts("rss", new[] { saved, ordinary, read });
+                store.SetRead(saved.id, true);
+                store.SetRead(read.id, true);
+                string html;
+                var view = server.Url + "?feed=rss";
+                Request(view, "GET", null, null, out html);
+                var token = Regex.Match(html, "name=token value='([0-9a-f]+)'").Groups[1].Value;
+                var origin = server.Url.TrimEnd('/');
+                var route = server.Url + "mark-article";
+                var action = "token=" + token + "&id=" + saved.id;
+                Expect(Request(route, "POST", "https://example.com", action + "&action=mark", out html) == 403,
+                    "a cross-origin request cannot mark an article");
+                Expect(Request(route, "POST", origin, action + "&action=toggle", out html) == 200 && html == "{\"marked\":1,\"read\":0}"
+                    && Request(route, "POST", origin, action + "&action=toggle", out html) == 200 && html == "{\"marked\":0,\"read\":1}"
+                    && Request(route, "POST", origin, action + "&action=toggle", out html) == 200 && html == "{\"marked\":1,\"read\":0}",
+                    "toggling alternates between marked unread and unmarked read");
+                Func<string, string, bool> shows = (page, id) => page.Contains("data-post='" + id + "'");
+                Expect(Request(view, "GET", null, null, out html) == 200 && shows(html, ordinary.id) && !shows(html, saved.id) && !shows(html, read.id),
+                    "the default view includes only unread and unmarked articles");
+                Expect(Request(view + "&apply-flags=1&state=8&state=4&state=1", "GET", null, null, out html) == 200
+                    && shows(html, saved.id) && shows(html, ordinary.id) && !shows(html, read.id), "checking both mark states and Unread excludes all read articles");
+                Expect(Request(view + "&flags=15", "GET", null, null, out html) == 200 && new[] { saved, ordinary, read }.All(post => shows(html, post.id)),
+                    "checking all four flags shows every article");
+                Expect(Request(view + "&flags=8", "GET", null, null, out html) == 200 && !shows(html, saved.id), "an unchecked read-status pair matches nothing");
+                Expect(!store.SetRead(saved.id, true) && store.MarkFeedRead("rss") == 1 && store.Count(true, "rss") == 1,
+                    "individual and bulk read actions leave a marked article unread");
+            }
+            using (var store = new Store(file))
+            {
+                store.ImportHistoricalPosts("rss", new[] { saved });
+                var marked = store.Items(true, "rss", dates: ArticleFilter.All.WithFlags(ArticleFilter.Unread | ArticleFilter.Marked));
+                Expect(marked.Count == 1 && marked[0][0] == saved.id, "marks survive restart and rediscovery");
+                var consumed = store.UpdateMark(saved.id, true);
+                Expect(consumed[0] == "0" && consumed[1] != null && store.UpdateMark(saved.id, true)[1] == consumed[1],
+                    "opening a marked article consumes the mark only once and marks it read");
             }
         }
         finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(file + suffix)) File.Delete(file + suffix); }
