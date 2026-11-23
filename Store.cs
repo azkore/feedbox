@@ -266,6 +266,28 @@ internal sealed class Store : IDisposable
         return Query("SELECT name,COALESCE(NULLIF(custom_label,''),label),feed_url FROM sources WHERE kind='rss' ORDER BY label,name");
     }
 
+    public string[] RssBody(string id)
+    {
+        var rows = Query("SELECT p.content,p.original_url,s.feed_url FROM posts p JOIN sources s ON s.name=p.source WHERE p.id=? AND s.kind='rss'", id);
+        return rows.Count == 0 || string.IsNullOrEmpty(rows[0][0]) ? null : rows[0];
+    }
+
+    public int RestoreRssBodies(string source, IEnumerable<Post> posts)
+    {
+        int updated = 0;
+        Transaction(() =>
+        {
+            // Fill in HTML lost by the old collector. Never add rows or alter read state or dates here.
+            foreach (var post in posts.Where(p => !string.IsNullOrEmpty(p.content)))
+            {
+                Run("UPDATE posts SET content=? WHERE id=? AND source=? AND COALESCE(content,'')=''",
+                    post.content, post.id, source);
+                if (Query("SELECT changes()")[0][0] == "1") updated++;
+            }
+        });
+        return updated;
+    }
+
     public Tuple<int, int> ImportRss(IEnumerable<OpmlFeed> feeds, bool newOnly)
     {
         int added = 0, existing = 0;
@@ -546,7 +568,7 @@ internal sealed class Store : IDisposable
             if (keepExisting && !inserted) continue;
             // A shorter listing card must not erase context captured on an earlier check.
             Run("UPDATE posts SET title=?,path=?,author=COALESCE(NULLIF(?,''),author),body=COALESCE(NULLIF(?,''),body),image=COALESCE(NULLIF(?,''),image),original_url=COALESCE(NULLIF(?,''),original_url),content=COALESCE(NULLIF(?,''),content) WHERE id=?",
-                post.title, post.path, post.author, post.body, post.image, post.originalUrl, post.content != null && post.content.Length <= 100000 ? post.content : null, post.id);
+                 post.title, post.path, post.author, post.body, post.image, post.originalUrl, post.content != null && post.content.Length <= RssCollector.MaxArticleHtml ? post.content : null, post.id);
         }
         // Publish the sequence in the same transaction as the articles, including across restarts.
         if (added > 0) Run("UPDATE settings SET value=? WHERE key='last_arrival'", arrival.ToString(CultureInfo.InvariantCulture));
@@ -600,7 +622,7 @@ internal sealed class Store : IDisposable
         var comparison = oldest ? ">" : "<";
         var order = oldest ? " ASC" : " DESC";
         var groupId = group.ToString(CultureInfo.InvariantCulture);
-        var sql = "SELECT id,source,title,original_url,published,read_at,author,body,image,content,arrival FROM posts WHERE (?='' OR source=?)"
+        var sql = "SELECT id,source,title,original_url,published,read_at,author,body,image,CASE WHEN source LIKE 'rss\\_%' ESCAPE '\\' THEN CASE WHEN COALESCE(content,'')<>'' THEN '1' ELSE '' END ELSE content END,arrival FROM posts WHERE (?='' OR source=?)"
             + " AND (?='0' OR source IN (SELECT source FROM feed_group_members WHERE group_id=?))"
             + (unread ? " AND read_at IS NULL" : "") + PublicationFilter + SearchFilter;
         var args = new List<string> { source, source, groupId, groupId, dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc,

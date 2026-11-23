@@ -13,6 +13,7 @@ using System.Xml.Linq;
 internal sealed class RssCollector : IDisposable
 {
     private const int MaxBytes = 4 * 1024 * 1024;
+    internal const int MaxArticleHtml = 100000;
     private readonly HttpClient client = new HttpClient(new HttpClientHandler
     {
         AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
@@ -105,15 +106,22 @@ internal sealed class RssCollector : IDisposable
                 : entry.Element(XName.Get("encoded", "http://purl.org/rss/1.0/modules/content/")) ?? entry.Element("description");
             var author = atom ? Value(entry.Element(ns + "author"), ns + "name")
                 : Value(entry, XName.Get("creator", "http://purl.org/dc/elements/1.1/"));
+            // Keep the publisher's article HTML separately from the searchable text.
+            var payload = content == null ? "" : content.HasElements ? string.Concat(content.Nodes()) : content.Value;
+            var contentType = content == null ? "" : (string)content.Attribute("type");
+            var html = !atom || contentType == "html" || contentType == "xhtml";
             posts.Add(id, new Post { id = id, title = heading == "" ? original.AbsoluteUri : heading,
                 originalUrl = original.AbsoluteUri, path = "", author = Text(author, 120),
                 created = created.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
                 publicationKnown = hasDate && publication != "" && created <= now,
-                body = Text(content == null ? "" : content.HasElements ? string.Concat(content.Nodes()) : content.Value, 12000) });
+                body = html ? Text(payload, 12000) : Bounded(payload.Trim(), 12000),
+                content = html && payload.Length <= MaxArticleHtml && payload.IndexOf('<') >= 0 ? payload : null });
         }
         if (posts.Count == 0 && entries.Any()) throw new InvalidDataException("The RSS feed has entries but no readable article links.");
         return posts.Values.ToList();
     }
+
+    private static string Bounded(string value, int limit) { return value.Length > limit ? value.Substring(0, limit) : value; }
 
     private static string Value(XElement element, XName name)
     {

@@ -81,6 +81,14 @@ internal sealed class Inbox : IDisposable
                 Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival() }), "application/json; charset=utf-8");
                 return;
             }
+            if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/rss-body")
+            {
+                var id = query["id"] ?? "";
+                var body = IsRssKey(id) ? store.RssBody(id) : null;
+                if (body == null) { Reply(context, 404, "Article body not found."); return; }
+                ReplyBytes(context, 200, Encoding.UTF8.GetBytes(RssFrame(body)), "text/html; charset=utf-8", rssFrame: true);
+                return;
+            }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/subscriptions.opml")
             {
                 context.Response.Headers["Content-Disposition"] = "attachment; filename=feed-inbox.opml";
@@ -424,7 +432,7 @@ internal sealed class Inbox : IDisposable
                 .Append("' data-published='").Append(E(post[4])).Append("' data-day='").Append(E(day))
                 .Append("' data-read='").Append(post[5] == null ? "0" : "1").Append("'><div class=article-inner><h3>");
             Uri original;
-            if (Uri.TryCreate(post[3], UriKind.Absolute, out original) && (original.Scheme == Uri.UriSchemeHttp || original.Scheme == Uri.UriSchemeHttps) && original.UserInfo == "")
+            if (TryWebUrl(post[3], out original))
                 html.Append("<a class=original target=_blank rel=noopener href='").Append(E(original.AbsoluteUri)).Append("'>").Append(E(post[2])).Append("</a>");
             else html.Append("<strong>").Append(E(post[2])).Append("</strong>");
             html.Append("</h3><small>").Append(E(byName.ContainsKey(post[1]) ? byName[post[1]][3] : post[1]));
@@ -434,13 +442,36 @@ internal sealed class Inbox : IDisposable
                  + (post[5] == null ? "<button name=mark value=read>Mark read</button>" : "<button name=mark value=unread>Mark unread</button>"), unread, source, oldest, group, dates));
             html.Append("</div>");
 
-            // Older captures and archive imports still have a plain-text reading view.
-            if (!ArticleBody.TryAppend(html, post[9]) && post[7] != "") AppendContext(html, post[7]);
+            // Publisher HTML lives in a separate document, without access to the inbox's styles or app controls.
+            if (IsRssKey(post[1]) && post[9] == "1")
+                html.Append("<iframe class=rss-body title='Article body' loading=lazy sandbox='allow-same-origin allow-popups allow-popups-to-escape-sandbox' src='/rss-body?id=")
+                    .Append(E(post[0])).Append("'></iframe>");
+            else if (!ArticleBody.TryAppend(html, post[9]) && post[7] != "") AppendContext(html, post[7]);
             Uri image;
             if (Uri.TryCreate(post[8], UriKind.Absolute, out image) && image.Scheme == Uri.UriSchemeHttps && (image.Host == "i.redd.it" || image.Host == "preview.redd.it" || image.Host == "external-preview.redd.it"))
                 html.Append("<img class=preview loading=lazy referrerpolicy=no-referrer alt='Post preview' src='").Append(E(image.AbsoluteUri)).Append("'>");
             html.Append("</div></article>");
         }
+    }
+
+    private static bool TryWebUrl(string text, out Uri url)
+    {
+        return Uri.TryCreate(text, UriKind.Absolute, out url) && (url.Scheme == Uri.UriSchemeHttp || url.Scheme == Uri.UriSchemeHttps) && url.UserInfo == "";
+    }
+
+    private string RssFrame(string[] body)
+    {
+        Uri original;
+        var relativeTo = TryWebUrl(body[1], out original) || TryWebUrl(body[2], out original)
+            ? "<base href='" + E(original.AbsoluteUri) + "'>" : "";
+        // The parent parses this escaped payload in an inert template before displaying it.
+        // Keep the frame readable before the publisher's own styles are applied.
+        return "<!doctype html><meta charset=utf-8>" + relativeTo + "<style>@font-face{font-family:Merriweather;src:url('" + Url + "fonts/merriweather.ttf')}"
+            + "</style><style>html,body{margin:0}body{color:#333;font:16px/1.69 Merriweather,Georgia,serif}a{color:#286d45}"
+            + "@media(prefers-color-scheme:dark){body{color:#edf1ee}a{color:#91d5ad}}"
+            + "img,video{max-width:100%;height:auto}#rss-content{display:flow-root;overflow-wrap:anywhere}#rss-content>:first-child{margin-top:0}"
+            + "#rss-content>:last-child{margin-bottom:0}</style><div id=rss-content></div><textarea id=rss-payload hidden>\n"
+            + E(body[0]) + "</textarea>";
     }
 
     private string FeedOptions(string source, bool unread, bool oldest, int group, ArticleFilter dates,
@@ -625,16 +656,18 @@ internal sealed class Inbox : IDisposable
         ReplyBytes(context, code, Encoding.UTF8.GetBytes(body), contentType ?? (code == 200 ? "text/html; charset=utf-8" : "text/plain; charset=utf-8"));
     }
 
-    private static void ReplyBytes(HttpListenerContext context, int code, byte[] bytes, string contentType)
+    private static void ReplyBytes(HttpListenerContext context, int code, byte[] bytes, string contentType, bool rssFrame = false)
     {
         var response = context.Response;
         response.StatusCode = code;
         response.ContentType = contentType;
         response.Headers["Cache-Control"] = "no-store";
         // Preserve the Origin on same-origin form submissions without sending a referrer to Reddit.
-        response.Headers["Referrer-Policy"] = "same-origin";
+        response.Headers["Referrer-Policy"] = rssFrame ? "no-referrer" : "same-origin";
         response.Headers["X-Content-Type-Options"] = "nosniff";
-        response.Headers["Content-Security-Policy"] = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src https://i.redd.it https://preview.redd.it https://external-preview.redd.it; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+        response.Headers["Content-Security-Policy"] = rssFrame
+            ? "default-src 'none'; style-src 'unsafe-inline' http: https:; img-src http: https: data:; font-src http: https: data:; media-src http: https: data:; base-uri http: https:; form-action 'none'; frame-ancestors 'self'; sandbox allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+            : "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src https://i.redd.it https://preview.redd.it https://external-preview.redd.it; frame-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
         response.ContentLength64 = bytes.Length;
         response.OutputStream.Write(bytes, 0, bytes.Length);
     }

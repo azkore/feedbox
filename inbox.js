@@ -656,9 +656,49 @@
         updateMoreFeeds();
     }
 
-    document.addEventListener('keydown', async event => {
+    function mountRssBody(frame) {
+        const doc = frame.contentDocument;
+        const payload = doc?.getElementById('rss-payload');
+        const body = doc?.getElementById('rss-content');
+        if (!payload || !body) return;
+        // Parse in an inert template so no publisher nodes load or run before inspection.
+        const template = doc.createElement('template');
+        template.innerHTML = payload.value;
+        payload.remove();
+        for (const element of template.content.querySelectorAll('script, iframe, frame, object, embed, base, meta[http-equiv], link[rel=import]')) element.remove();
+        for (const element of template.content.querySelectorAll('*')) {
+            for (const attribute of [...element.attributes]) {
+                if (attribute.localName.toLowerCase().startsWith('on')) element.removeAttributeNode(attribute);
+            }
+            if (element.localName !== 'a' && element.localName !== 'area') continue;
+            // Ordinary links leave the sandbox in a new tab; executable URLs stay as text.
+            for (const attr of [...element.attributes].filter(a => a.localName === 'href')) {
+                try {
+                    const target = new URL(attr.value, doc.baseURI);
+                    if (/^(javascript|vbscript|data):$/.test(target.protocol)) element.removeAttributeNode(attr);
+                } catch { element.removeAttributeNode(attr); }
+            }
+            element.setAttribute('target', '_blank');
+            element.setAttribute('rel', 'noopener noreferrer');
+            element.removeAttribute('ping');
+        }
+        body.append(template.content);
+        // Let long text and late-loading images size the frame without creating an inner scroller.
+        const fit = () => { frame.style.height = `${Math.max(1, Math.ceil(body.getBoundingClientRect().height))}px`; };
+        new ResizeObserver(fit).observe(body);
+        fit();
+        doc.addEventListener('keydown', event => handleReaderKey(event, frame.closest('article[data-post]')));
+    }
+
+    document.addEventListener('load', event => {
+        if (event.target.matches?.('iframe.rss-body')) mountRssBody(event.target);
+    }, true);
+    // A cached body may have loaded while the deferred script was starting.
+    for (const frame of document.querySelectorAll('iframe.rss-body')) mountRssBody(frame);
+
+    async function handleReaderKey(event, frameRow = null) {
         if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.ctrlKey || event.metaKey
-            || event.target.closest('input,textarea,select,[contenteditable=true],.feed-editor,.feed-menu')) return;
+            || event.target.closest?.('input,textarea,select,[contenteditable=true],.feed-editor,.feed-menu')) return;
         const key = event.key.toLowerCase();
         if (!['j', 'k', 'v'].includes(key) || (key === 'v' && event.shiftKey)) return;
         event.preventDefault();
@@ -667,13 +707,14 @@
         if (event.shiftKey) { moveFeed(key === 'j' ? 1 : -1); return; }
 
         const articles = rows();
-        const current = selected && onScreen(selected) ? selected : null;
+        const current = frameRow && onScreen(frameRow) ? frameRow : selected && onScreen(selected) ? selected : null;
         // After a mouse scroll or on a fresh page, target a visible row without marking unseen rows.
         if (!current) select(articles.find(onScreen) || articles[0]);
+        else if (current !== selected) select(current, false);
         if (!selected) return;
         if (key === 'v') {
-            const original = selected.querySelector('a.original');
-            if (original) window.open(original.href, '_blank', 'noopener');
+            const target = selected.querySelector('a.original')?.href;
+            if (target) window.open(target, '_blank', 'noopener');
             return;
         }
         if (!current) return;
@@ -698,7 +739,8 @@
         } finally {
             busy = false;
         }
-    });
+    }
+    document.addEventListener('keydown', handleReaderKey);
 
     // Scroll to the selected feed only if it is visible in the sidebar.
     function revealCurrentFeed() {
