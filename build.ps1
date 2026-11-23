@@ -34,13 +34,15 @@ foreach ($asset in @('InterVariable.woff2','Merriweather-Regular.ttf','Inter-OFL
 $shared = @('AppConfig.cs', 'Store.cs', 'Collector.cs', 'RssCollector.cs', 'Inbox.cs', 'ArticleBody.cs', 'Opml.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 
 # Use the compiler already supplied by .NET Framework; no system-wide SDK or service is installed.
-& $compiler @flags '/target:winexe' ('/out:' + (Join-Path $out 'FeedInbox.exe')) @shared (Join-Path $PSScriptRoot 'App.cs')
-if ($LASTEXITCODE -ne 0) { throw 'Feed Inbox could not compile.' }
+& $compiler @flags '/target:winexe' ('/out:' + (Join-Path $out 'feedbox.exe')) @shared (Join-Path $PSScriptRoot 'App.cs')
+if ($LASTEXITCODE -ne 0) { throw 'feedbox could not compile.' }
 & $compiler @flags '/target:exe' ('/out:' + (Join-Path $out 'Tests.exe')) @shared (Join-Path $PSScriptRoot 'Tests.cs')
 if ($LASTEXITCODE -ne 0) { throw 'The inbox tests could not compile.' }
 & (Join-Path $out 'Tests.exe')
 if ($LASTEXITCODE -ne 0) { throw 'The inbox tests failed.' }
 
 # An optional example config should never overwrite settings in an existing build directory.
-$config = Join-Path $out 'feed-inbox.conf'
-if (!(Test-Path -LiteralPath $config)) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'feed-inbox.conf') -Destination $config }
+$config = Join-Path $out 'feedbox.conf'
+if (!(Test-Path -LiteralPath $config) -and !(Test-Path -LiteralPath (Join-Path $out 'feed-inbox.conf'))) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'feedbox.conf') -Destination $config
+}

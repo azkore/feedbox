@@ -101,7 +101,7 @@ internal sealed class Inbox : IDisposable
             }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/subscriptions.opml")
             {
-                context.Response.Headers["Content-Disposition"] = "attachment; filename=feed-inbox.opml";
+                context.Response.Headers["Content-Disposition"] = "attachment; filename=feedbox.opml";
                 ReplyBytes(context, 200, Opml.Export(store.RssSubscriptions(), store.Groups()), "text/x-opml; charset=utf-8");
                 return;
             }
@@ -326,7 +326,7 @@ internal sealed class Inbox : IDisposable
             : byName.ContainsKey(source) ? byName[source][3] : source;
 
         // Keep feed navigation independent of the centered reading stream.
-        var html = new StringBuilder("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Feed Inbox</title><link rel=stylesheet href='/inbox.css'><script src='/inbox.js' defer></script>");
+        var html = new StringBuilder("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>feedbox</title><link rel=stylesheet href='/inbox.css'><script src='/inbox.js' defer></script>");
         html.Append("<body data-unread='").Append(unread ? "1" : "0").Append("' data-flags='").Append(dates.Flags).Append("'><aside>");
         AppendSidebarTools(html, unread, source, oldest, group, dates);
         html.Append("<nav aria-label='Feeds'><div class=feed-pins>");
@@ -454,7 +454,7 @@ internal sealed class Inbox : IDisposable
     private void AppendSidebarTools(StringBuilder html, bool unread, string source, bool oldest, int group, ArticleFilter dates)
     {
         // Keep management controls in a disclosure so opening them doesn't resize the feed list.
-        html.Append("<div class=sidebar-header><strong class=brand>Feed Inbox</strong><details class=sidebar-tools>")
+        html.Append("<div class=sidebar-header><strong class=brand>feed(in)box</strong><details class=sidebar-tools>")
             .Append("<summary aria-label='Sidebar options' title='Sidebar options'>&#x22EF;</summary><div class=sidebar-tools-panel>")
             .Append("<label class=feed-sort-label hidden>Sort feeds<select class=feed-sort><option value=name>Grouped: by name</option><option value=group-count>Grouped: by count</option><option value=all-count>All feeds: by count</option></select></label>");
         html.Append("<details class=add-source><summary>Add source or group</summary>");

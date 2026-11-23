@@ -18,7 +18,7 @@ internal sealed class App : Form
     private readonly string profile;
     private readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
     private readonly TextBox address = new TextBox { Dock = DockStyle.Top, ReadOnly = true };
-    private readonly NotifyIcon tray = new NotifyIcon { Icon = SystemIcons.Application, Text = "Feed Inbox" };
+    private readonly NotifyIcon tray = new NotifyIcon { Icon = SystemIcons.Application, Text = "feedbox" };
     private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 2 * 60 * 1000 };
     private CoreWebView2Environment environment;
     private bool running, ready, needsSignIn, exiting;
@@ -30,19 +30,19 @@ internal sealed class App : Form
     {
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        // Only one app may write the collection and open the dedicated profile at a time.
+        // Keep the same mutex so old and new builds cannot collect or open the profile concurrently.
         using (var mutex = new Mutex(false, "Local\\RedditInbox"))
         {
             bool owned;
             try { owned = mutex.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
-            if (!owned) { MessageBox.Show("Feed Inbox is already running."); return; }
+            if (!owned) { MessageBox.Show("feedbox is already running."); return; }
             try
             {
                 var config = AppConfig.Load(AppDomain.CurrentDomain.BaseDirectory, args);
                 using (var store = new Store(config.Database))
                 using (var window = new App(store, config.Profile, config.Port)) Application.Run(window);
             }
-            catch (Exception ex) { MessageBox.Show(ex.Message, "Feed Inbox could not start"); }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "feedbox could not start"); }
             finally { mutex.ReleaseMutex(); }
         }
     }
@@ -54,7 +54,7 @@ internal sealed class App : Form
         collector = new Collector(store);
         // Start on the WebView thread, but give the browser the task for this particular check.
         inbox = new Inbox(store, port, feed => (Task<string>)Invoke(new Func<Task<string>>(() => CheckRequested(feed))));
-        Text = "Feed Inbox - Reddit sign-in";
+        Text = "feedbox - Reddit sign-in";
         ClientSize = new Size(1060, 800);
         ShowInTaskbar = false;
 
@@ -91,7 +91,7 @@ internal sealed class App : Form
                 ready = true;
                 await Task.WhenAll(Check(false), CheckRss());
             }
-            catch (Exception ex) { tray.ShowBalloonTip(6000, "Feed Inbox", "WebView2 could not start: " + ex.GetType().Name, ToolTipIcon.Error); }
+            catch (Exception ex) { tray.ShowBalloonTip(6000, "feedbox", "WebView2 could not start: " + ex.GetType().Name, ToolTipIcon.Error); }
         };
         FormClosing += (s, e) =>
         {
@@ -103,7 +103,7 @@ internal sealed class App : Form
     private void SignIn()
     {
         // Never move the collector away from its current request or open login without user action.
-        if (!ready || running) { tray.ShowBalloonTip(5000, "Feed Inbox", "A check is running or WebView2 is starting.", ToolTipIcon.Info); return; }
+        if (!ready || running) { tray.ShowBalloonTip(5000, "feedbox", "A check is running or WebView2 is starting.", ToolTipIcon.Info); return; }
         Show();
         Activate();
         view.CoreWebView2.Navigate("https://www.reddit.com/login/");
@@ -234,7 +234,7 @@ internal sealed class App : Form
                 if (result.auth)
                 {
                     foreach (var pending in sources.SkipWhile(s => s != source).Skip(1)) store.Note(pending.Name, result.problem);
-                    tray.ShowBalloonTip(6000, "Feed Inbox", "Reddit needs attention. Open Reddit from the tray.", ToolTipIcon.Info);
+                    tray.ShowBalloonTip(6000, "feedbox", "Reddit needs attention. Open Reddit from the tray.", ToolTipIcon.Info);
                     needsSignIn = true;
                     store.SetPaused(true);
                     break;
@@ -254,7 +254,7 @@ internal sealed class App : Form
         catch (Exception ex)
         {
             // Leave all stored cursors intact after an unexpected local failure.
-            tray.ShowBalloonTip(6000, "Feed Inbox", "Collection failed: " + ex.GetType().Name, ToolTipIcon.Warning);
+            tray.ShowBalloonTip(6000, "feedbox", "Collection failed: " + ex.GetType().Name, ToolTipIcon.Warning);
             return "Collection failed: " + ex.GetType().Name;
         }
         finally { running = false; }

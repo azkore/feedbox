@@ -12,13 +12,25 @@
     let readerTail = 0;
     const rows = () => Array.from(entries.querySelectorAll('article[data-post]'));
 
+    // Preserve browser preferences and bookmarks when switching to the new storage names.
+    function migrateBrowserKeys(storage) {
+        for (const key of Object.keys(storage)) {
+            if (!key.startsWith('feed-inbox.')) continue;
+            const renamed = 'feedbox.' + key.slice('feed-inbox.'.length);
+            if (storage.getItem(renamed) === null) storage.setItem(renamed, storage.getItem(key));
+            storage.removeItem(key);
+        }
+    }
+    try { migrateBrowserKeys(localStorage); } catch { /* Reading also works without stored preferences. */ }
+    try { migrateBrowserKeys(sessionStorage); } catch { /* The browser may block session storage. */ }
+
     // Use the view's filters as the bookmark key, independent of receipts and pagination URLs.
     function readingKey(url) {
         const params = new URL(url).searchParams;
         const flags = params.get('flags') ?? (params.get('all') === '1' ? '15' : '5');
         // Keep bookmarks made before the checkbox filter replaced Unread and View all articles.
         const state = flags === '5' ? '' : flags === '15' ? '1' : 'flags:' + flags;
-        return 'feed-inbox.position:' + JSON.stringify(['feed', 'group', 'all', 'oldest', 'from', 'to', 'q'].map(key => key === 'all' ? state : params.get(key) || ''));
+        return 'feedbox.position:' + JSON.stringify(['feed', 'group', 'all', 'oldest', 'from', 'to', 'q'].map(key => key === 'all' ? state : params.get(key) || ''));
     }
 
     function readingPosition(url) {
@@ -44,7 +56,7 @@
             const response = await fetch(checkForm.action, { method: 'POST', body });
             state.text = await response.text() || 'No result received.';
         } catch {
-            state.text = 'Lost contact with Feed Inbox before receiving the result.';
+            state.text = 'Lost contact with feedbox before receiving the result.';
         } finally {
             clearInterval(timer);
             state.pending = false;
@@ -202,7 +214,7 @@
         const panels = [...document.querySelectorAll('.sidebar-tools-panel > details')];
         const nextPanels = [...page.querySelectorAll('.sidebar-tools-panel > details')];
         if (!nextMain?.querySelector('#entries') || !nextMain.querySelector('.feed-header') || !nextNav || panels.length !== nextPanels.length)
-            throw new Error('Feed Inbox returned an incomplete view.');
+            throw new Error('feedbox returned an incomplete view.');
 
         // Update the server-rendered view without rebuilding the sidebar shell or the document.
         const sidebarScroll = nav.scrollTop;
@@ -545,7 +557,7 @@
     });
 
     const splitter = document.querySelector('.sidebar-resize');
-    const widthKey = 'feed-inbox.sidebar-width';
+    const widthKey = 'feedbox.sidebar-width';
     const maxWidth = () => Math.max(160, Math.min(560, innerWidth - 330));
     let preferred = 272;
     try {
@@ -585,7 +597,7 @@
         sidebarWidth(Number(splitter.getAttribute('aria-valuenow')) + (event.key === 'ArrowLeft' ? -12 : 12), true);
     });
 
-    const collapseKey = 'feed-inbox.collapsed-groups';
+    const collapseKey = 'feedbox.collapsed-groups';
     let collapsed = new Set();
     try { collapsed = new Set(JSON.parse(localStorage.getItem(collapseKey) || '[]')); }
     catch { /* Use the expanded view when saved state is unavailable. */ }
@@ -615,7 +627,7 @@
         sidebarTools.open = false;
         if (sidebarTools.contains(event.target)) sidebarTools.querySelector('summary').focus({ preventScroll: true });
     });
-    const feedSortKey = 'feed-inbox.feed-sort';
+    const feedSortKey = 'feedbox.feed-sort';
     const originalFeedOrder = new WeakMap();
     const feedNames = new Intl.Collator(undefined, { sensitivity: 'base' });
     try {
@@ -1050,8 +1062,8 @@
 
     let seenInTab = false;
     try {
-        seenInTab = sessionStorage.getItem('feed-inbox.visited') === '1';
-        sessionStorage.setItem('feed-inbox.visited', '1');
+        seenInTab = sessionStorage.getItem('feedbox.visited') === '1';
+        sessionStorage.setItem('feedbox.visited', '1');
     } catch { /* Navigation timing, when available, also distinguishes reloads. */ }
     const timing = performance.getEntriesByType('navigation')[0]?.type;
     const reloading = timing ? timing === 'reload' : seenInTab;

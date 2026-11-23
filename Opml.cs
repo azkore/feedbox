@@ -66,7 +66,7 @@ internal static class Opml
                 xml.WriteStartElement("opml");
                 xml.WriteAttributeString("version", "2.0");
                 xml.WriteStartElement("head");
-                xml.WriteElementString("title", "Feed Inbox subscriptions");
+                xml.WriteElementString("title", "feedbox subscriptions");
                 xml.WriteEndElement();
                 xml.WriteStartElement("body");
                 foreach (var group in groups)

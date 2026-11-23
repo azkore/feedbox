@@ -187,7 +187,7 @@ internal static class Tests
                     }
                 }
                 string html;
-                Expect(Request(server.Url, "GET", null, null, out html) == 200 && html.Contains("Feed Inbox"),
+                Expect(Request(server.Url, "GET", null, null, out html) == 200 && html.Contains("<title>feedbox</title>"),
                     "the inbox still serves requests after clients reset a response in progress");
             }
         }
@@ -336,10 +336,15 @@ internal static class Tests
         try
         {
             var defaults = AppConfig.Load(folder, new string[0]);
-            Expect(defaults.Database == Path.Combine(folder, "feed-inbox.sqlite") && defaults.Profile == Path.Combine(folder, "profile")
+            Expect(defaults.Database == Path.Combine(folder, "feedbox.sqlite") && defaults.Profile == Path.Combine(folder, "profile")
                 && defaults.Port == 51883, "no-argument startup uses the executable folder");
+            var legacyDatabase = Path.Combine(folder, "feed-inbox.sqlite");
+            File.WriteAllText(legacyDatabase, "");
+            File.WriteAllText(Path.Combine(folder, "feed-inbox.conf"), "port=52501\n");
+            var upgrade = AppConfig.Load(folder, new string[0]);
+            Expect(upgrade.Database == legacyDatabase && upgrade.Port == 52501, "an upgrade keeps an existing archive and config");
             var externalProfile = Path.Combine(Path.GetTempPath(), "External Profile");
-            File.WriteAllText(Path.Combine(folder, "feed-inbox.conf"), "# Local settings\ndatabase=data files\\test.sqlite\nprofile=" + externalProfile + "\nport=52603\n");
+            File.WriteAllText(Path.Combine(folder, "feedbox.conf"), "# Local settings\ndatabase=data files\\test.sqlite\nprofile=" + externalProfile + "\nport=52603\n");
             var custom = AppConfig.Load(folder, new string[0]);
             Expect(custom.Database == Path.Combine(folder, "data files", "test.sqlite") && custom.Profile == externalProfile
                 && custom.Port == 52603, "the text config accepts absolute and executable-relative paths with spaces");
