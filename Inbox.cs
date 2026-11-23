@@ -331,7 +331,12 @@ internal sealed class Inbox : IDisposable
         html.Append("<div id=entries data-arrival='").Append(arrival.ToString(CultureInfo.InvariantCulture)).Append("'>");
 
         // Use the original URL supplied by the collector. Opening it does not mark the post read.
-        var items = store.Items(unread, source, before, beforeId, oldest: oldest, group: group, dates: dates);
+        var anchor = query["at"] ?? "";
+        var anchorTime = ArticleId(anchor) && before == "" ? store.PublishedAt(anchor) : "";
+        var items = anchorTime == "" ? null : store.Items(unread, source, anchorTime, anchor, oldest: oldest, group: group, dates: dates, inclusive: true);
+        // An article already read, removed, or outside the view cannot serve as the resume position.
+        if (items == null || items.Count == 0 || items[0][0] != anchor)
+            items = store.Items(unread, source, before, beforeId, oldest: oldest, group: group, dates: dates);
         if (items.Count == 0) html.Append(dates.Search != "" ? "<p>No articles match this search in the current view.</p>" : dates.Active ? (unread ? "<p>No unread posts in this date range.</p>" : "<p>No posts in this date range.</p>")
             : (unread ? "<p>No unread posts.</p>" : "<p>No posts collected yet.</p>"));
         AppendArticles(html, items, byName, unread, source, oldest, group, dates, true);

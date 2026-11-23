@@ -12,6 +12,17 @@
     let readerTail = 0;
     const rows = () => Array.from(entries.querySelectorAll('article[data-post]'));
 
+    // Use the view's filters as the bookmark key, independent of receipts and pagination URLs.
+    function readingKey(url) {
+        const params = new URL(url).searchParams;
+        return 'feed-inbox.position:' + JSON.stringify(['feed', 'group', 'all', 'oldest', 'from', 'to', 'q'].map(key => params.get(key) || ''));
+    }
+
+    function readingPosition(url) {
+        try { return localStorage.getItem(readingKey(url)); }
+        catch { return null; }
+    }
+
     async function checkFeed(checkForm) {
         const button = checkForm.querySelector('button');
         if (button.disabled) return;
@@ -115,7 +126,7 @@
     setInterval(refreshUnreadCounts, 30000);
     document.addEventListener('visibilitychange', refreshUnreadCounts);
 
-    function applyView(page, url, historyMode, focus) {
+    function applyView(page, url, historyMode, focus, resume = false) {
         const nextMain = page.querySelector('main');
         const nextNav = page.querySelector('aside nav');
         const panels = [...document.querySelectorAll('aside details')];
@@ -152,8 +163,10 @@
             heading.tabIndex = -1;
             heading.focus({ preventScroll: true });
         }
-        window.scrollTo(0, historyMode === 'preserve' ? readerScroll : 0);
-
+        const anchor = resume && readingPosition(url);
+        const row = anchor && rows().find(article => article.dataset.post === anchor);
+        if (row) select(row, false);
+        else window.scrollTo(0, historyMode === 'preserve' ? readerScroll : 0);
     }
 
     function showError(error) { status.textContent = error.message || 'Could not update the inbox.'; }
@@ -165,9 +178,16 @@
         const request = navigation = new AbortController();
         main.setAttribute('aria-busy', 'true');
         try {
-            const response = await fetch(href, { signal: request.signal, cache: 'no-store' });
+            const url = new URL(href, location.href);
+            const anchor = !url.searchParams.has('before') && readingPosition(url);
+            if (anchor) url.searchParams.set('at', anchor);
+            const response = await fetch(url, { signal: request.signal, cache: 'no-store' });
             const page = await pageFrom(response);
-            if (navigation === request) applyView(page, response.url, fromHistory ? 'history' : 'push', true);
+            if (navigation === request) {
+                const visible = new URL(href, location.href);
+                visible.searchParams.delete('at');
+                applyView(page, visible.href, fromHistory ? 'history' : 'push', true, true);
+            }
         } catch (error) {
             if (!request.signal.aborted) {
                 if (fromHistory) location.reload(); // The address already changed; resync the view.
@@ -495,6 +515,7 @@
         selected?.removeAttribute('data-current');
         selected = row;
         row.setAttribute('data-current', 'true');
+        try { localStorage.setItem(readingKey(displayedUrl), row.dataset.post); } catch { /* The current view still works. */ }
         if (focus) row.focus({ preventScroll: true });
         alignArticle(row);
     }
@@ -630,8 +651,17 @@
     }
     revealCurrentFeed();
 
-    if (document.body.dataset.unread === '1') {
-        // Reload to the first unread article, not the old pixel offset.
+    let seenInTab = false;
+    try {
+        seenInTab = sessionStorage.getItem('feed-inbox.visited') === '1';
+        sessionStorage.setItem('feed-inbox.visited', '1');
+    } catch { /* Navigation timing, when available, also distinguishes reloads. */ }
+    const timing = performance.getEntriesByType('navigation')[0]?.type;
+    const reloading = timing ? timing === 'reload' : seenInTab;
+    if (!reloading && readingPosition(displayedUrl)) {
+        navigate(displayedUrl);
+    } else if (document.body.dataset.unread === '1') {
+        // An explicit reload starts at the first remaining unread article rather than an old pixel offset.
         const previousRestoration = history.scrollRestoration;
         history.scrollRestoration = 'manual';
         const reloadedEntries = entries;
