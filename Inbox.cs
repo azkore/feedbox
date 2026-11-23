@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Specialized;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -56,17 +57,21 @@ internal sealed class Inbox : IDisposable
         {
             // Block alternate Host headers and mutations originating from another web page.
             if (request.Headers["Host"] != host) { Reply(context, 403, "Wrong host."); return; }
+            // Browsers encode these parameters in UTF-8; HttpListener.QueryString uses the Windows code page here.
+            var rawUrl = request.RawUrl ?? "";
+            var queryStart = rawUrl.IndexOf('?');
+            var query = HttpUtility.ParseQueryString(queryStart < 0 ? "" : rawUrl.Substring(queryStart + 1), Encoding.UTF8);
             ArticleFilter dates;
-            if (!ArticleFilter.TryCreate(request.QueryString["from"], request.QueryString["to"], out dates))
-            { Reply(context, 400, "Choose a valid date range. From must be on or before To."); return; }
+            if (!ArticleFilter.TryCreate(query["from"], query["to"], out dates, query["q"]))
+            { Reply(context, 400, "Choose a valid date range and a search of at most 120 characters."); return; }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/")
             {
-                Reply(context, 200, Render(request, dates));
+                Reply(context, 200, Render(request.Url.AbsolutePath, query, dates));
                 return;
             }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/check-status")
             {
-                Reply(context, 200, RenderCheckStatus(SourceName(request.QueryString["feed"]), GroupId(request.QueryString["group"]), store.IsPaused));
+                Reply(context, 200, RenderCheckStatus(SourceName(query["feed"]), GroupId(query["group"]), store.IsPaused));
                 return;
             }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/unread-counts")
@@ -86,7 +91,9 @@ internal sealed class Inbox : IDisposable
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/fonts/merriweather.ttf")
             { ReplyBytes(context, 200, merriweather, "font/ttf"); return; }
             if (request.HttpMethod != "POST") { Reply(context, 405, "Method not allowed."); return; }
-            if (request.Headers["Origin"] != Url.TrimEnd('/') || request.ContentLength64 < 0 || request.ContentLength64 > 4096
+            const int maxBody = 4096;
+            if (request.ContentLength64 > maxBody) { Reply(context, 413, "The upload is too large."); return; }
+            if (request.Headers["Origin"] != Url.TrimEnd('/') || request.ContentLength64 < 0
                 || request.ContentType == null || !request.ContentType.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))
             { Reply(context, 403, "Use the local inbox to make changes."); return; }
 
@@ -99,8 +106,8 @@ internal sealed class Inbox : IDisposable
             }
             var form = HttpUtility.ParseQueryString(Encoding.UTF8.GetString(bytes));
             if (form["token"] != token) { Reply(context, 403, "Reload the inbox and try again."); return; }
-            if (!ArticleFilter.TryCreate(form["from"], form["to"], out dates))
-            { Reply(context, 400, "Choose a valid date range. From must be on or before To."); return; }
+            if (!ArticleFilter.TryCreate(form["from"], form["to"], out dates, form["q"]))
+            { Reply(context, 400, "Choose a valid date range and a search of at most 120 characters."); return; }
             var group = GroupId(form["group"]);
             string result = "";
 
@@ -168,7 +175,18 @@ internal sealed class Inbox : IDisposable
                     // No group or All feeds selection can trigger a bulk read action.
                     var feed = SourceName(form["feed"]);
                     if (feed == "" || !store.HasSource(feed)) { Reply(context, 400, "Select a subscribed feed."); return; }
-                    result = "&marked=" + store.MarkFeedRead(feed, dates).ToString(CultureInfo.InvariantCulture);
+                    long through;
+                    if (!long.TryParse(form["through"], NumberStyles.None, CultureInfo.InvariantCulture, out through))
+                    { Reply(context, 400, "Reload the feed before marking it read."); return; }
+                    var batch = Guid.NewGuid().ToString("N");
+                    long marked = store.MarkFeedRead(feed, dates, batch, through);
+                    result = "&marked=" + marked.ToString(CultureInfo.InvariantCulture) + (marked > 0 ? "&batch=" + batch : "");
+                    break;
+                case "/undo-feed-read":
+                    var undoFeed = SourceName(form["feed"]);
+                    var undoBatch = form["batch"] ?? "";
+                    if (undoFeed == "" || !IsBatch(undoBatch)) { Reply(context, 400, "That read receipt is not available."); return; }
+                    result = "&restored=" + store.UndoFeedRead(undoFeed, undoBatch).ToString(CultureInfo.InvariantCulture);
                     break;
                 case "/check":
                     var batchOutcome = await check(null);
@@ -200,19 +218,20 @@ internal sealed class Inbox : IDisposable
         finally { context.Response.Close(); }
     }
 
-    private string Render(HttpListenerRequest request, ArticleFilter dates)
+    private string Render(string path, NameValueCollection query, ArticleFilter dates)
     {
-        bool unread = request.QueryString["all"] != "1";
-        bool oldest = request.QueryString["oldest"] == "1";
+        bool unread = query["all"] != "1";
+        bool oldest = query["oldest"] == "1";
         bool paused = store.IsPaused;
-        var source = SourceName(request.QueryString["feed"]);
-        var group = GroupId(request.QueryString["group"]);
-        var before = request.QueryString["before"] ?? "";
-        var beforeId = request.QueryString["id"] ?? "";
+        var source = SourceName(query["feed"]);
+        var group = GroupId(query["group"]);
+        var before = query["before"] ?? "";
+        var beforeId = query["id"] ?? "";
         DateTimeOffset cursor;
         if (!ArticleId(beforeId) || before.Length > 40
             || !DateTimeOffset.TryParse(before, CultureInfo.InvariantCulture, DateTimeStyles.None, out cursor)) before = "";
         var sources = store.Sidebar();
+        var arrival = store.LatestArrival();
         // Start with the same date-scoped snapshot that the browser will use to refresh the badges.
         var counts = store.UnreadCounts(dates);
         Func<string, long> countFor = name => counts.ContainsKey(name) ? counts[name] : 0;
@@ -281,29 +300,56 @@ internal sealed class Inbox : IDisposable
         if (byName.ContainsKey(source))
         {
             html.Append(Form("check-feed", IconButton("&#x21BB;", "Check this feed"), unread, source, oldest, group, dates));
-            html.Append(Form("mark-feed-read", IconButton("&#x2713;", "Mark all as read", tooltip: dates.Active ? "Mark all as read in this feed and date range" : "Mark all as read in this feed"), unread, source, oldest, group, dates));
+            html.Append(Form("mark-feed-read", "<input type=hidden name=through value='" + arrival.ToString(CultureInfo.InvariantCulture) + "'>"
+                + IconButton("&#x2713;", "Mark all as read", tooltip: dates.Active || dates.Search != "" ? "Mark all matching articles as read in this feed" : "Mark all as read in this feed"), unread, source, oldest, group, dates));
         }
         else if (!paused) html.Append(Form("check", IconButton("&#x21BB;", "Check now"), unread, source, oldest, group, dates));
         html.Append("<details class=check-status data-status-url='").Append(E("/check-status" + ViewUrl(source, true, false, group).Substring(1)))
             .Append("'><summary>Check status</summary>").Append(RenderCheckStatus(source, group, paused))
             .Append("</details></div></div><p id=check-feedback role=status></p><p id=key-status role=status></p></header>");
         long markedCount;
-        if (byName.ContainsKey(source) && long.TryParse(request.QueryString["marked"], NumberStyles.None, CultureInfo.InvariantCulture, out markedCount))
-            html.Append("<p role=status class=bulk-receipt>").Append(markedCount == 0 ? "No unread articles to mark." :
-                "Marked " + markedCount.ToString("N0", CultureInfo.CurrentCulture) + (markedCount == 1 ? " article" : " articles") + " as read.").Append("</p>");
+        var batch = query["batch"] ?? "";
+        if (byName.ContainsKey(source) && long.TryParse(query["marked"], NumberStyles.None, CultureInfo.InvariantCulture, out markedCount))
+        {
+            html.Append("<div role=status class=bulk-receipt>").Append(markedCount == 0 ? "No unread articles to mark." :
+                "Marked " + markedCount.ToString("N0", CultureInfo.CurrentCulture) + (markedCount == 1 ? " article" : " articles") + " as read.");
+            if (IsBatch(batch) && store.CanUndoFeedRead(source, batch))
+                html.Append(" ").Append(Form("undo-feed-read", "<input type=hidden name=batch value='" + E(batch) + "'><button>Undo</button>", unread, source, oldest, group, dates));
+            html.Append("</div>");
+        }
+        long restored;
+        if (long.TryParse(query["restored"], NumberStyles.None, CultureInfo.InvariantCulture, out restored))
+            html.Append("<p role=status class=bulk-receipt>").Append(restored == 0 ? "No articles to restore." :
+                "Restored " + restored.ToString("N0", CultureInfo.CurrentCulture) + (restored == 1 ? " unread article." : " unread articles.")).Append("</p>");
         long deletedCount;
-        if (long.TryParse(request.QueryString["deleted"], NumberStyles.None, CultureInfo.InvariantCulture, out deletedCount))
+        if (long.TryParse(query["deleted"], NumberStyles.None, CultureInfo.InvariantCulture, out deletedCount))
         {
             html.Append("<p role=status>").Append(deletedCount == 0 ? "No read articles to delete." : "Deleted " + deletedCount + " read articles.");
-            if (deletedCount > 0) html.Append(request.QueryString["compact"] == "0" ? " SQLite could not finish compacting the file." : " Database compacted.");
+            if (deletedCount > 0) html.Append(query["compact"] == "0" ? " SQLite could not finish compacting the file." : " Database compacted.");
             html.Append("</p>");
         }
-        html.Append("<div id=entries>");
+        html.Append("<div id=entries data-arrival='").Append(arrival.ToString(CultureInfo.InvariantCulture)).Append("'>");
 
         // Use the original URL supplied by the collector. Opening it does not mark the post read.
         var items = store.Items(unread, source, before, beforeId, oldest: oldest, group: group, dates: dates);
-        if (items.Count == 0) html.Append(dates.Active ? (unread ? "<p>No unread posts in this date range.</p>" : "<p>No posts in this date range.</p>")
+        if (items.Count == 0) html.Append(dates.Search != "" ? "<p>No articles match this search in the current view.</p>" : dates.Active ? (unread ? "<p>No unread posts in this date range.</p>" : "<p>No posts in this date range.</p>")
             : (unread ? "<p>No unread posts.</p>" : "<p>No posts collected yet.</p>"));
+        AppendArticles(html, items, byName, unread, source, oldest, group, dates, true);
+        html.Append("</div>");
+        if (items.Count > 100)
+        {
+            // The cursor belongs to the last rendered row and remains valid after it is marked read.
+            var last = items[99];
+            var url = ViewUrl(source, unread, oldest, group, dates) + "&before=" + Uri.EscapeDataString(last[4]) + "&id=" + Uri.EscapeDataString(last[0]);
+            html.Append("<a id=more href='").Append(E(url)).Append("'>More posts</a>");
+        }
+        html.Append(FeedOptions(source, unread, oldest, group, dates, groups));
+        return html.Append("</main></body></html>").ToString();
+    }
+
+    private void AppendArticles(StringBuilder html, System.Collections.Generic.IList<string[]> items,
+        System.Collections.Generic.IDictionary<string, string[]> byName, bool unread, string source, bool oldest, int group, ArticleFilter dates, bool headings)
+    {
         string lastDay = null;
         for (int i = 0; i < Math.Min(items.Count, 100); i++)
         {
@@ -312,9 +358,11 @@ internal sealed class Inbox : IDisposable
             var valid = DateTimeOffset.TryParse(post[4], CultureInfo.InvariantCulture, DateTimeStyles.None, out published);
             var date = valid ? published.ToLocalTime().ToString("g") : "";
             var day = valid ? published.LocalDateTime.ToString("D") : "Unknown date";
-            if (day != lastDay) html.Append("<h2>").Append(E(day)).Append("</h2>");
+            if (headings && day != lastDay) html.Append("<h2>").Append(E(day)).Append("</h2>");
             lastDay = day;
-            html.Append("<article tabindex='-1' id='").Append(E(post[0])).Append("' data-post='").Append(E(post[0])).Append("' data-source='").Append(E(post[1])).Append("' data-read='").Append(post[5] == null ? "0" : "1").Append("'><div class=article-inner><h3>");
+            html.Append("<article tabindex='-1' id='").Append(E(post[0])).Append("' data-post='").Append(E(post[0])).Append("' data-source='").Append(E(post[1]))
+                .Append("' data-published='").Append(E(post[4])).Append("' data-day='").Append(E(day))
+                .Append("' data-read='").Append(post[5] == null ? "0" : "1").Append("'><div class=article-inner><h3>");
             Uri original;
             if (Uri.TryCreate(post[3], UriKind.Absolute, out original) && (original.Scheme == Uri.UriSchemeHttp || original.Scheme == Uri.UriSchemeHttps) && original.UserInfo == "")
                 html.Append("<a class=original target=_blank rel=noopener href='").Append(E(original.AbsoluteUri)).Append("'>").Append(E(post[2])).Append("</a>");
@@ -333,16 +381,6 @@ internal sealed class Inbox : IDisposable
                 html.Append("<img class=preview loading=lazy referrerpolicy=no-referrer alt='Post preview' src='").Append(E(image.AbsoluteUri)).Append("'>");
             html.Append("</div></article>");
         }
-        html.Append("</div>");
-        if (items.Count > 100)
-        {
-            // The cursor belongs to the last rendered row and remains valid after it is marked read.
-            var last = items[99];
-            var url = ViewUrl(source, unread, oldest, group, dates) + "&before=" + Uri.EscapeDataString(last[4]) + "&id=" + Uri.EscapeDataString(last[0]);
-            html.Append("<a id=more href='").Append(E(url)).Append("'>More posts</a>");
-        }
-        html.Append(FeedOptions(source, unread, oldest, group, dates, groups));
-        return html.Append("</main></body></html>").ToString();
     }
 
     private string FeedOptions(string source, bool unread, bool oldest, int group, ArticleFilter dates,
@@ -420,8 +458,7 @@ internal sealed class Inbox : IDisposable
     {
         return "<form class=inline method=post action='/" + action + "'><input type=hidden name=token value='" + token + "'>"
             + ViewFields(source, unread, oldest, group)
-            + (dates.From == "" ? "" : "<input type=hidden name=from value='" + E(dates.From) + "'>")
-            + (dates.To == "" ? "" : "<input type=hidden name=to value='" + E(dates.To) + "'>") + fields + "</form>";
+            + DateFields(dates) + SearchField(dates) + fields + "</form>";
     }
 
     private static string ViewFields(string source, bool unread, bool oldest, int group)
@@ -430,16 +467,29 @@ internal sealed class Inbox : IDisposable
             + (unread ? "" : "<input type=hidden name=all value=1>") + (oldest ? "<input type=hidden name=oldest value=1>" : "");
     }
 
+    private static string DateFields(ArticleFilter dates)
+    {
+        return (dates.From == "" ? "" : "<input type=hidden name=from value='" + E(dates.From) + "'>")
+            + (dates.To == "" ? "" : "<input type=hidden name=to value='" + E(dates.To) + "'>");
+    }
+
+    private static string SearchField(ArticleFilter dates)
+    {
+        return dates.Search == "" ? "" : "<input type=hidden name=q value='" + E(dates.Search) + "'>";
+    }
+
     private static string DateControl(string source, bool unread, bool oldest, int group, ArticleFilter dates)
     {
         // Unset dates stay open-ended when new articles arrive or old ones are deleted.
         var label = dates.Active ? (dates.From == "" ? "Oldest" : dates.From) + " &#8211; " + (dates.To == "" ? "Newest" : dates.To) : "Dates";
+        ArticleFilter withoutDates;
+        ArticleFilter.TryCreate("", "", out withoutDates, dates.Search);
         return "<details class=date-filter><summary title='Filter all feeds by publication date'>" + label + "</summary>"
-            + "<form action='/' method=get>" + ViewFields(source, unread, oldest, group)
+            + "<form action='/' method=get>" + ViewFields(source, unread, oldest, group) + SearchField(dates)
             + "<label>From <input type=date name=from value='" + E(dates.From) + "'></label>"
             + "<label>To <input type=date name=to value='" + E(dates.To) + "'></label>"
             + "<small>Leave blank for oldest or newest.</small><div class=date-actions><button>Apply</button>"
-            + "<a class=date-clear href='" + E(ViewUrl(source, unread, oldest, group)) + "'>Clear</a></div></form></details>";
+            + "<a class=date-clear href='" + E(ViewUrl(source, unread, oldest, group, withoutDates)) + "'>Clear</a></div></form></details>";
     }
 
     private static string IconButton(string glyph, string label, string attributes = "", string tooltip = null)
@@ -467,6 +517,7 @@ internal sealed class Inbox : IDisposable
 
     private static bool IsRssKey(string id) { return Regex.IsMatch(id ?? "", @"\Arss_[a-f0-9]{64}\z"); }
     private static bool ArticleId(string id) { return IsRssKey(id) || Regex.IsMatch(id ?? "", @"\At3_[a-z0-9]+\z"); }
+    private static bool IsBatch(string id) { return Regex.IsMatch(id, @"\A[0-9a-f]{32}\z"); }
 
     private static int GroupId(string value)
     {
@@ -478,7 +529,8 @@ internal sealed class Inbox : IDisposable
     {
         dates = dates ?? ArticleFilter.All;
         return "/?feed=" + Uri.EscapeDataString(source) + (group > 0 ? "&group=" + group : "") + (unread ? "" : "&all=1") + (oldest ? "&oldest=1" : "")
-            + (dates.From == "" ? "" : "&from=" + Uri.EscapeDataString(dates.From)) + (dates.To == "" ? "" : "&to=" + Uri.EscapeDataString(dates.To));
+            + (dates.From == "" ? "" : "&from=" + Uri.EscapeDataString(dates.From)) + (dates.To == "" ? "" : "&to=" + Uri.EscapeDataString(dates.To))
+            + (dates.Search == "" ? "" : "&q=" + Uri.EscapeDataString(dates.Search));
     }
 
     private static string Resource(string name)

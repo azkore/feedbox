@@ -268,7 +268,7 @@ internal static class Tests
                 var route = server.Url + "mark-feed-read";
                 Expect(Request(route, "POST", origin, "token=" + token + "&feed=&group=1", out html) == 400
                     && store.Count(true) == 106, "a group request cannot mark a feed read");
-                Expect(Request(route, "POST", origin, "token=" + token + "&feed=rss", out html) == 303
+                Expect(Request(route, "POST", origin, "token=" + token + "&feed=rss&through=" + store.LatestArrival(), out html) == 303
                     && store.Count(true, "rss") == 0 && store.Count(true, "otherfeed") == 1 && store.Count(false) == 106,
                     "bulk read reaches every post in one feed without changing other feeds or deleting posts");
 
@@ -293,7 +293,7 @@ internal static class Tests
                     && html.Contains("\"rss\":2") && html.Contains("\"total\":2"), "periodic unread counts use the same publication dates");
                 Expect(Request(route, "POST", origin, "token=" + token + "&feed=rss&from=2026-10-26&to=2026-10-25", out html) == 400
                     && store.Count(true, "rss") == 4, "reversed dates cannot mark articles read");
-                Expect(Request(route, "POST", origin, "token=" + token + "&feed=rss&" + dates, out html) == 303
+                Expect(Request(route, "POST", origin, "token=" + token + "&feed=rss&through=" + store.LatestArrival() + "&" + dates, out html) == 303
                     && store.Items(true, "rss").Select(row => row[0]).OrderBy(id => id).SequenceEqual(new[] { after.id, prior.id }),
                     "bulk read leaves articles outside the selected dates unread");
             }

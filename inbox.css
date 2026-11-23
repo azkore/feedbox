@@ -75,6 +75,7 @@ aside .feed[hidden] { display: none; }
 .resizing-sidebar, .resizing-sidebar * { cursor: col-resize !important; user-select: none; }
 .add-source input { min-width: 0; width: 100%; margin: 4px 0 8px; padding: 4px 6px; }
 
+
 /* The page stays the scroller so native page movement and keyboard selection use the same viewport. */
 /* Feedly centers an 840px card with a minimum 44px gutter. Use half of that space on each side. */
 main { --reader-gutter: max(22px, calc((100% - var(--sidebar-width) - 840px) / 4)); margin-left: calc(var(--sidebar-width) + var(--reader-gutter)); margin-right: var(--reader-gutter); padding-bottom: calc(56px + var(--reader-tail, 0px)); }
@@ -93,6 +94,7 @@ h1 { margin: 0; font-size: 15px; }
 .toolbar a[aria-current=page] { color: var(--ink); font-weight: 650; }
 .toolbar a:hover { text-decoration: underline; }
 .toolbar .sort { border-bottom: 1px dotted var(--muted); }
+
 .check-status { position: relative; }
 .check-status ul { position: absolute; z-index: 3; top: 100%; right: 0; width: min(360px, 78vw); max-height: 55vh; overflow: auto; list-style: none; margin: 7px 0; padding: 10px 14px; background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; box-shadow: 0 4px 15px #0002; }
 .check-status li { padding: 5px 0; }

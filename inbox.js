@@ -90,7 +90,7 @@
             // Periodic counts must use the same dates as the rendered articles.
             const url = new URL('/unread-counts', displayedUrl);
             const filter = new URL(displayedUrl).searchParams;
-            for (const bound of ['from', 'to']) if (filter.has(bound)) url.searchParams.set(bound, filter.get(bound));
+            for (const bound of ['from', 'to', 'q']) if (filter.has(bound)) url.searchParams.set(bound, filter.get(bound));
             const response = await fetch(url);
             if (!response.ok) return;
             const { feeds, total } = await response.json();
@@ -153,6 +153,7 @@
             heading.focus({ preventScroll: true });
         }
         window.scrollTo(0, historyMode === 'preserve' ? readerScroll : 0);
+
     }
 
     function showError(error) { status.textContent = error.message || 'Could not update the inbox.'; }
@@ -324,12 +325,12 @@
             event.preventDefault();
             const params = new URLSearchParams(new FormData(form));
             // Changing dates starts a new reading stream; its first URL has no pagination cursor.
-            for (const bound of ['from', 'to']) if (!params.get(bound)) params.delete(bound);
+            for (const bound of ['from', 'to', 'q']) if (!params.get(bound)?.trim()) params.delete(bound);
             navigate(form.action + '?' + params);
             return;
         }
         const action = form.getAttribute('action');
-        if (!['/check-feed', '/check', '/read', '/mark-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed'].includes(action)) return;
+        if (!['/check-feed', '/check', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed'].includes(action)) return;
         event.preventDefault();
         if (busy || navigation) return;
         if (action === '/check-feed' || action === '/check') { await checkFeed(form); return; }
@@ -630,7 +631,7 @@
     revealCurrentFeed();
 
     if (document.body.dataset.unread === '1') {
-        // A newly loaded unread list starts at its first article. An old pixel offset may point at a different one.
+        // Reload to the first unread article, not the old pixel offset.
         const previousRestoration = history.scrollRestoration;
         history.scrollRestoration = 'manual';
         const reloadedEntries = entries;
