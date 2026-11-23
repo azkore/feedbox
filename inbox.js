@@ -104,7 +104,7 @@
             for (const bound of ['from', 'to', 'q']) if (filter.has(bound)) url.searchParams.set(bound, filter.get(bound));
             const response = await fetch(url);
             if (!response.ok) return;
-            const { feeds, total } = await response.json();
+            const { feeds, total, arrival } = await response.json();
             // Discard a snapshot taken before a newer read action or view change.
             if (busy || navigation || entries !== view || readRevision !== revision) return;
             const unread = name => Object.hasOwn(feeds, name) ? feeds[name] : 0;
@@ -119,8 +119,58 @@
                 link.querySelector('.count').textContent = count;
             }
             updateMoreFeeds();
+            if (arrival > Number(view.dataset.arrival)) await refreshArticles(view, revision);
         } catch { /* Preserve the current badges if the local app cannot be reached. */ }
         finally { countsPending = false; }
+    }
+
+    async function refreshArticles(view, revision) {
+        const more = document.querySelector('#more');
+        const edge = more?.href;
+        const url = new URL('/new-articles', displayedUrl);
+        const filter = new URL(displayedUrl).searchParams;
+        for (const key of ['feed', 'group', 'all', 'oldest', 'from', 'to', 'q']) if (filter.has(key)) url.searchParams.set(key, filter.get(key));
+        if (edge) {
+            const boundary = new URL(edge).searchParams;
+            for (const key of ['before', 'id']) url.searchParams.set(key, boundary.get(key));
+        }
+        url.searchParams.set('since', view.dataset.arrival);
+        const response = await fetch(url);
+        if (!response.ok) return;
+        const delta = (await pageFrom(response)).querySelector('#entries');
+        if (!delta || busy || navigation || entries !== view || readRevision !== revision || document.querySelector('#more')?.href !== edge) return;
+
+        const currentRows = rows();
+        const ids = new Set(currentRows.map(row => row.dataset.post));
+        const incoming = [...delta.querySelectorAll('article[data-post]')].filter(row => !ids.has(row.dataset.post));
+        if (incoming.length) {
+            const anchor = selected && onScreen(selected) ? selected : currentRows.find(onScreen);
+            const top = anchor?.getBoundingClientRect().top;
+            const direction = filter.get('oldest') === '1' ? 1 : -1;
+            const compareValue = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+            const compare = (a, b) => direction * (compareValue(a.dataset.published, b.dataset.published) || compareValue(a.dataset.post, b.dataset.post));
+            // Keep existing article nodes, focus, and the position of the article already being read.
+            const merged = currentRows.concat(incoming).sort(compare);
+            let next = null;
+            for (let i = merged.length - 1; i >= 0; i--) {
+                const row = merged[i];
+                if (!ids.has(row.dataset.post)) view.insertBefore(row, next);
+                next = row;
+            }
+            for (const node of view.querySelectorAll(':scope > h2, :scope > p')) node.remove();
+            let day;
+            for (const row of merged) {
+                if (row.dataset.day === day) continue;
+                day = row.dataset.day;
+                const heading = document.createElement('h2');
+                heading.textContent = day;
+                view.insertBefore(heading, row);
+            }
+            if (anchor) window.scrollBy(0, anchor.getBoundingClientRect().top - top);
+        }
+        view.dataset.arrival = delta.dataset.arrival;
+        const bulk = header.querySelector('form[action="/mark-feed-read"]');
+        if (bulk) bulk.elements.through.value = delta.dataset.arrival;
     }
 
     setInterval(refreshUnreadCounts, 30000);

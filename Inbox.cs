@@ -64,7 +64,7 @@ internal sealed class Inbox : IDisposable
             ArticleFilter dates;
             if (!ArticleFilter.TryCreate(query["from"], query["to"], out dates, query["q"]))
             { Reply(context, 400, "Choose a valid date range and a search of at most 120 characters."); return; }
-            if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/")
+            if (request.HttpMethod == "GET" && (request.Url.AbsolutePath == "/" || request.Url.AbsolutePath == "/new-articles"))
             {
                 Reply(context, 200, Render(request.Url.AbsolutePath, query, dates));
                 return;
@@ -78,7 +78,7 @@ internal sealed class Inbox : IDisposable
             {
                 var counts = store.UnreadCounts(dates);
                 var json = new System.Web.Script.Serialization.JavaScriptSerializer();
-                Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum() }), "application/json; charset=utf-8");
+                Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival() }), "application/json; charset=utf-8");
                 return;
             }
             // Serve only named embedded assets, never a file path supplied by the client.
@@ -232,6 +232,19 @@ internal sealed class Inbox : IDisposable
             || !DateTimeOffset.TryParse(before, CultureInfo.InvariantCulture, DateTimeStyles.None, out cursor)) before = "";
         var sources = store.Sidebar();
         var arrival = store.LatestArrival();
+        if (path == "/new-articles")
+        {
+            long since;
+            if (!long.TryParse(query["since"], NumberStyles.None, CultureInfo.InvariantCulture, out since)) since = arrival;
+            since = Math.Min(since, arrival);
+            var fresh = store.Items(unread, source, limit: 100, oldest: oldest, group: group, dates: dates,
+                since: since, through: arrival, edge: before, edgeId: beforeId);
+            var delta = new StringBuilder();
+            var nextArrival = fresh.Count == 100 ? fresh.Last()[10] : arrival.ToString(CultureInfo.InvariantCulture);
+            delta.Append("<div id=entries data-arrival='").Append(nextArrival).Append("'>");
+            AppendArticles(delta, fresh, sources.ToDictionary(row => row[0]), unread, source, oldest, group, dates, false);
+            return delta.Append("</div>").ToString();
+        }
         // Start with the same date-scoped snapshot that the browser will use to refresh the badges.
         var counts = store.UnreadCounts(dates);
         Func<string, long> countFor = name => counts.ContainsKey(name) ? counts[name] : 0;
