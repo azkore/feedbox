@@ -359,6 +359,7 @@
                     line.textContent = `${label}: ${counts[label].toLocaleString()}`;
                     return index === 0 ? [line] : ['\n', line];
                 }));
+                countTip.append(`\n\nlast 24h: ${counts.last24h.toLocaleString()}`);
                 const anchor = link.getBoundingClientRect();
                 countTip.hidden = false;
                 countTip.style.left = `${Math.max(8, Math.min(anchor.right + 6, innerWidth - countTip.offsetWidth - 8))}px`;

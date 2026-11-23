@@ -86,7 +86,7 @@ internal sealed class Inbox : IDisposable
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/sidebar-counts")
             {
                 // This request is made only when opening a sidebar tooltip.
-                var counts = ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]));
+                var counts = ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]), DateTimeOffset.UtcNow);
                 var json = new System.Web.Script.Serialization.JavaScriptSerializer();
                 Reply(context, 200, json.Serialize(counts), "application/json; charset=utf-8");
                 return;
@@ -450,9 +450,11 @@ internal sealed class Inbox : IDisposable
         return html.Append("</main></body></html>").ToString();
     }
 
-    private object ArchiveCountSummary(string source, int group)
+    private object ArchiveCountSummary(string source, int group, DateTimeOffset? recentAsOf = null)
     {
-        var counts = store.SidebarArticleCounts(source, group);
+        var counts = store.SidebarArticleCounts(source, group, recentAsOf);
+        if (recentAsOf.HasValue)
+            return new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2], last24h = counts[3] };
         return new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2] };
     }
 

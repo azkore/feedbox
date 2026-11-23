@@ -661,14 +661,27 @@ internal sealed class Store : IDisposable
             + (unread ? " AND read_at IS NULL" : ""), source, source)[0][0], CultureInfo.InvariantCulture);
     }
 
-    public long[] SidebarArticleCounts(string source, int group)
+    public long[] SidebarArticleCounts(string source, int group, DateTimeOffset? recentAsOf = null)
     {
         // Count the complete archive for this row, independently of the reading view's filters.
         // Marked can overlap either read state; counting posts directly keeps the global total unique.
-        const string counts = "SELECT COUNT(CASE WHEN marked=1 THEN 1 END), COUNT(read_at), COUNT(*) FROM posts";
-        var result = source != "" ? Query(counts + " WHERE source=?", source)
-            : group != 0 ? Query(counts + " WHERE source IN (SELECT source FROM feed_group_members WHERE group_id=?)", group.ToString(CultureInfo.InvariantCulture))
-            : Query(counts);
+        var sql = "SELECT COUNT(CASE WHEN marked=1 THEN 1 END), COUNT(read_at), COUNT(*)";
+        var args = new List<string>();
+        // Only the tooltip needs the rolling count, based on publication time rather than when we saved the post.
+        if (recentAsOf.HasValue)
+        {
+            sql += ", COUNT(CASE WHEN published>=? AND published<=? THEN 1 END)";
+            args.Add(Stamp(recentAsOf.Value.AddHours(-24)));
+            args.Add(Stamp(recentAsOf.Value));
+        }
+        sql += " FROM posts";
+        if (source != "") { sql += " WHERE source=?"; args.Add(source); }
+        else if (group != 0)
+        {
+            sql += " WHERE source IN (SELECT source FROM feed_group_members WHERE group_id=?)";
+            args.Add(group.ToString(CultureInfo.InvariantCulture));
+        }
+        var result = Query(sql, args.ToArray());
         return result[0].Select(value => long.Parse(value, CultureInfo.InvariantCulture)).ToArray();
     }
 
