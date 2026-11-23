@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -153,12 +154,43 @@ internal static class Tests
             TestRss();
             TestAppConfig();
             TestReadingTools();
+            TestInterruptedResponse();
             TestOpml();
         }
         finally
         {
             foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix);
         }
+    }
+
+    private static void TestInterruptedResponse()
+    {
+        var file = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            var port = 55000 + new Random().Next(5000);
+            using (var store = new Store(file))
+            using (var server = new Inbox(store, port, name => System.Threading.Tasks.Task.FromResult("")))
+            {
+                var request = Encoding.ASCII.GetBytes("GET /fonts/merriweather.ttf HTTP/1.1\r\nHost: 127.0.0.1:" + port + "\r\n\r\n");
+                // Reset the socket after the response starts, while the font still has bytes to send.
+                for (int i = 0; i < 12; i++)
+                {
+                    using (var client = new TcpClient { ReceiveBufferSize = 1024, ReceiveTimeout = 5000, LingerState = new LingerOption(true, 0) })
+                    {
+                        client.Connect(IPAddress.Loopback, port);
+                        var stream = client.GetStream();
+                        stream.Write(request, 0, request.Length);
+                        var beginning = new byte[16];
+                        if (stream.Read(beginning, 0, beginning.Length) == 0) throw new IOException("The font response never started.");
+                    }
+                }
+                string html;
+                Expect(Request(server.Url, "GET", null, null, out html) == 200 && html.Contains("Feed Inbox"),
+                    "the inbox still serves requests after clients reset a response in progress");
+            }
+        }
+        finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(file + suffix)) File.Delete(file + suffix); }
     }
 
     private static void TestReadingTools()

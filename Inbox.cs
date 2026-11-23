@@ -232,10 +232,22 @@ internal sealed class Inbox : IDisposable
             context.Response.StatusCode = 303;
             context.Response.RedirectLocation = ViewUrl(SourceName(form["feed"]), form["all"] != "1", form["oldest"] == "1", group, dates) + result;
         }
+        // HTTP.sys reports a client disconnect as HttpListenerException, including after sending headers.
+        catch (HttpListenerException) { }
         catch (IOException) { }
         catch (ObjectDisposedException) { }
-        catch (Exception) { Reply(context, 500, "The inbox could not complete the request."); }
-        finally { context.Response.Close(); }
+        catch (Exception) { TryFinishResponse(() => Reply(context, 500, "The inbox could not complete the request.")); }
+        finally { TryFinishResponse(() => context.Response.Close()); }
+    }
+
+    private static void TryFinishResponse(Action finish)
+    {
+        // A failed error reply or close must not escape the async request handler. Once headers are sent,
+        // HttpListener can reject changes to the response with InvalidOperationException.
+        try { finish(); }
+        catch (HttpListenerException) { }
+        catch (IOException) { }
+        catch (InvalidOperationException) { }
     }
 
     private string Render(string path, NameValueCollection query, ArticleFilter dates)
