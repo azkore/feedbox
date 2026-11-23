@@ -308,6 +308,7 @@ internal sealed class Inbox : IDisposable
         html.Append("<a class=sort href='").Append(E(ViewUrl(source, unread, !oldest, group, dates))).Append("' title='Switch to ")
             .Append(oldest ? "newest first'>Oldest first" : "oldest first'>Newest first").Append("</a>");
         html.Append(DateControl(source, unread, oldest, group, dates));
+        html.Append(SearchControl(source, unread, oldest, group, dates));
         html.Append(Form("collection", paused ? IconButton("&#x25B6;&#xFE0E;", "Resume collection", " name=action value=resume")
             : IconButton("&#x23F8;&#xFE0E;", "Pause collection", " name=action value=pause"), unread, source, oldest, group, dates));
         if (byName.ContainsKey(source))
@@ -494,6 +495,15 @@ internal sealed class Inbox : IDisposable
     private static string SearchField(ArticleFilter dates)
     {
         return dates.Search == "" ? "" : "<input type=hidden name=q value='" + E(dates.Search) + "'>";
+    }
+
+    private static string SearchControl(string source, bool unread, bool oldest, int group, ArticleFilter dates)
+    {
+        ArticleFilter withoutSearch;
+        ArticleFilter.TryCreate(dates.From, dates.To, out withoutSearch);
+        return "<form class=archive-search action='/' method=get>" + ViewFields(source, unread, oldest, group) + DateFields(dates)
+            + "<input type=search maxlength=120 name=q aria-label='Search titles and text' placeholder='Search' value='" + E(dates.Search) + "'>"
+            + (dates.Search == "" ? "" : " <a class=clear-search href='" + E(ViewUrl(source, unread, oldest, group, withoutSearch)) + "'>Clear search</a>") + "</form>";
     }
 
     private static string DateControl(string source, bool unread, bool oldest, int group, ArticleFilter dates)

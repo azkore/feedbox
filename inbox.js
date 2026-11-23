@@ -378,7 +378,7 @@
     document.addEventListener('click', async event => {
         // Intercept only inbox controls; let the browser handle new tabs and original articles.
         if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-        const link = event.target.closest('aside nav a.feed, .toolbar > a, .date-clear, #more');
+        const link = event.target.closest('aside nav a.feed, .toolbar > a, .date-clear, .clear-search, #more');
         if (!link) return;
         event.preventDefault();
         if (link.id !== 'more') { navigate(link.href); return; }
@@ -391,7 +391,7 @@
 
     document.addEventListener('submit', async event => {
         const form = event.target;
-        if (form.closest('.date-filter')) {
+        if (form.closest('.date-filter, .archive-search')) {
             event.preventDefault();
             const params = new URLSearchParams(new FormData(form));
             // Changing dates starts a new reading stream; its first URL has no pagination cursor.
