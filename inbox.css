@@ -31,9 +31,15 @@ summary { cursor: pointer; }
 
 /* Keep the feed list independently scrollable without scrolling the article column. */
 aside { position: fixed; inset: 0 auto 0 0; width: var(--sidebar-width); background: var(--nav); border-right: 1px solid var(--rule); display: flex; flex-direction: column; }
-.brand { min-height: var(--bar-height); padding: 0 16px; display: flex; align-items: center; border-bottom: 1px solid var(--rule); }
+.sidebar-header { position: relative; z-index: 4; min-height: var(--bar-height); padding: 0 12px 0 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--rule); }
+.sidebar-tools > summary { list-style: none; padding: 2px 6px; border-radius: 5px; color: var(--muted); font-size: 18px; line-height: 1; }
+.sidebar-tools > summary::-webkit-details-marker { display: none; }
+.sidebar-tools > summary:hover, .sidebar-tools[open] > summary { background: var(--active); color: var(--ink); }
+/* Let the controls scroll in a small window without borrowing space from the feed list. */
+.sidebar-tools-panel { position: absolute; top: 100%; left: 8px; width: clamp(240px, calc(100% - 16px), 320px); max-width: calc(100vw - 16px); max-height: calc(100dvh - var(--bar-height) - 12px); overflow: auto; background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 4px 15px #0002; }
 aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 6px 7px; }
-.feed-sort { margin: 4px 7px 0; min-width: 0; font: inherit; }
+.feed-sort-label:not([hidden]) { display: grid; gap: 5px; padding: 10px 12px; }
+.feed-sort { width: 100%; min-width: 0; font: inherit; }
 .feed { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 32px; padding: 4px 10px; border-radius: 5px; color: var(--ink); text-decoration: none; font-size: 13px; }
 .feed-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed[data-feed]:not([data-feed='']) .feed-label::before { content: 'r/'; display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 9px; background: #d33d14; color: white; font: 700 10px/16px system-ui, sans-serif; text-align: center; }
@@ -69,7 +75,7 @@ aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain
 .group-members .more-feeds { margin-left: 25px; }
 aside .feed[hidden] { display: none; }
 .feed-section-label { margin: 15px 13px 4px; color: var(--muted); font-size: 12px; }
-.add-source { border-top: 1px solid var(--rule); padding: 10px 16px; }
+.add-source { border-top: 1px solid var(--rule); padding: 10px 12px; }
 .add-source form { display: block; margin-top: 8px; }
 .add-source form + form { margin-top: 14px; }
 .sidebar-resize { position: absolute; inset: 0 -4px 0 auto; width: 9px; cursor: col-resize; touch-action: none; }
@@ -149,8 +155,7 @@ article[data-read='0'] .article-actions { display: none; }
     aside { position: static; width: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
     .sidebar-resize { display: none; }
     aside nav { max-height: 132px; flex: auto; }
-    .brand { min-height: 36px; }
-    .add-source input { width: 150px; }
+    .sidebar-header { min-height: 36px; }
     main { margin: 0 12px; }
     article { padding: 23px 16px; }
     .article-inner h3 { font-size: 22px; }

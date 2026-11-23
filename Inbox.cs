@@ -318,8 +318,9 @@ internal sealed class Inbox : IDisposable
 
         // Keep feed navigation independent of the centered reading stream.
         var html = new StringBuilder("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Feed Inbox</title><link rel=stylesheet href='/inbox.css'><script src='/inbox.js' defer></script>");
-        html.Append("<body data-unread='").Append(unread ? "1" : "0").Append("' data-flags='").Append(dates.Flags).Append("'><aside><strong class=brand>Feed Inbox</strong>")
-            .Append("<select class=feed-sort aria-label='Sort feeds' hidden><option value=name>Grouped: by name</option><option value=group-count>Grouped: by count</option><option value=all-count>All feeds: by count</option></select><nav aria-label='Feeds'>");
+        html.Append("<body data-unread='").Append(unread ? "1" : "0").Append("' data-flags='").Append(dates.Flags).Append("'><aside>");
+        AppendSidebarTools(html, unread, source, oldest, group, dates);
+        html.Append("<nav aria-label='Feeds'>");
         html.Append(FeedLink("", "All feeds", source, unread, counts.Values.Sum(), oldest, 0, group, dates));
         var grouped = new System.Collections.Generic.HashSet<string>();
         // Use the saved folder order and sort feeds by their displayed names.
@@ -350,22 +351,7 @@ internal sealed class Inbox : IDisposable
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div>");
         }
         if (groups.Count > 0) html.Append("<div hidden>").Append(Form("move-feed", "", unread, source, oldest, group, dates)).Append("</div>");
-        html.Append("</nav><details class=add-source><summary>Add source or group</summary>");
-        html.Append(Form("source", "<label>Subreddit <input name=name required maxlength=23 placeholder='r/rss'></label> <button>Add</button>", unread, source, oldest, group, dates));
-        html.Append(Form("rss-source", "<label>RSS or Atom URL <input type=url name=url required maxlength=2000 placeholder='https://example.com/feed/'></label> <button>Add feed</button>", unread, source, oldest, group, dates));
-        html.Append(Form("import-opml", "<label>Import RSS/Atom subscriptions <input type=file name=opml-file accept='.opml,.xml,text/xml' required></label>"
-            + "<label><input type=checkbox name=new-only value=1> Only collect new articles after import</label> <button>Import OPML</button>", unread, source, oldest, group, dates));
-        html.Append("<p><a href='/subscriptions.opml' download>Export RSS/Atom OPML</a></p>");
-        html.Append(Form("group", "<label>Group <input name=name required maxlength=80></label> <button>Add group</button>", unread, source, oldest, group, dates)).Append("</details>");
-        // This is a global archive action regardless of the selected reading view.
-        // Bind deletion to the read articles present when this page was rendered.
-        var cutoff = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-        var readCount = store.ReadCount(cutoff);
-        var fileSize = (store.DatabaseFileBytes / 1048576.0).ToString("N1", CultureInfo.CurrentCulture);
-        html.Append("<details class=add-source><summary>Database</summary><p>Database file: ").Append(E(fileSize))
-            .Append(" MiB<br>").Append(readCount).Append(" read articles</p>");
-        html.Append(Form("delete-read", "<input type=hidden name=confirmed value=0><input type=hidden name=cutoff value='" + E(cutoff) + "'><button data-delete-count='" + readCount + "'" + (readCount == 0 ? " disabled" : "") + ">Delete read articles</button>", unread, source, oldest, group, dates));
-        html.Append("</details><div class=sidebar-resize role=separator aria-label='Feed sidebar width' aria-orientation=vertical aria-valuemin=160 aria-valuemax=560 aria-valuenow=272 tabindex=0></div></aside>");
+        html.Append("</nav><div class=sidebar-resize role=separator aria-label='Feed sidebar width' aria-orientation=vertical aria-valuemin=160 aria-valuemax=560 aria-valuenow=272 tabindex=0></div></aside>");
 
         html.Append("<main><header class=feed-header><div class=heading><h1>").Append(E(title)).Append("</h1><div class=toolbar>");
         html.Append(StateControl(source, oldest, group, dates));
@@ -434,6 +420,30 @@ internal sealed class Inbox : IDisposable
         }
         html.Append(FeedOptions(source, unread, oldest, group, dates, groups));
         return html.Append("</main></body></html>").ToString();
+    }
+
+    private void AppendSidebarTools(StringBuilder html, bool unread, string source, bool oldest, int group, ArticleFilter dates)
+    {
+        // Keep management controls in a disclosure so opening them doesn't resize the feed list.
+        html.Append("<div class=sidebar-header><strong class=brand>Feed Inbox</strong><details class=sidebar-tools>")
+            .Append("<summary aria-label='Sidebar options' title='Sidebar options'>&#x22EF;</summary><div class=sidebar-tools-panel>")
+            .Append("<label class=feed-sort-label hidden>Sort feeds<select class=feed-sort><option value=name>Grouped: by name</option><option value=group-count>Grouped: by count</option><option value=all-count>All feeds: by count</option></select></label>");
+        html.Append("<details class=add-source><summary>Add source or group</summary>");
+        html.Append(Form("source", "<label>Subreddit <input name=name required maxlength=23 placeholder='r/rss'></label> <button>Add</button>", unread, source, oldest, group, dates));
+        html.Append(Form("rss-source", "<label>RSS or Atom URL <input type=url name=url required maxlength=2000 placeholder='https://example.com/feed/'></label> <button>Add feed</button>", unread, source, oldest, group, dates));
+        html.Append(Form("import-opml", "<label>Import RSS/Atom subscriptions <input type=file name=opml-file accept='.opml,.xml,text/xml' required></label>"
+            + "<label><input type=checkbox name=new-only value=1> Only collect new articles after import</label> <button>Import OPML</button>", unread, source, oldest, group, dates));
+        html.Append("<p><a href='/subscriptions.opml' download>Export RSS/Atom OPML</a></p>");
+        html.Append(Form("group", "<label>Group <input name=name required maxlength=80></label> <button>Add group</button>", unread, source, oldest, group, dates)).Append("</details>");
+
+        // This global action deletes only the read articles present when the panel was rendered.
+        var cutoff = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+        var readCount = store.ReadCount(cutoff);
+        var fileSize = (store.DatabaseFileBytes / 1048576.0).ToString("N1", CultureInfo.CurrentCulture);
+        html.Append("<details class=add-source><summary>Database</summary><p>Database file: ").Append(E(fileSize))
+            .Append(" MiB<br>").Append(readCount).Append(" read articles</p>");
+        html.Append(Form("delete-read", "<input type=hidden name=confirmed value=0><input type=hidden name=cutoff value='" + E(cutoff) + "'><button data-delete-count='" + readCount + "'" + (readCount == 0 ? " disabled" : "") + ">Delete read articles</button>", unread, source, oldest, group, dates));
+        html.Append("</details></div></details></div>");
     }
 
     private void AppendArticles(StringBuilder html, System.Collections.Generic.IList<string[]> items,

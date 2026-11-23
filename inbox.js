@@ -184,8 +184,9 @@
     function applyView(page, url, historyMode, focus, resume = false) {
         const nextMain = page.querySelector('main');
         const nextNav = page.querySelector('aside nav');
-        const panels = [...document.querySelectorAll('aside details')];
-        const nextPanels = [...page.querySelectorAll('aside details')];
+        // Refresh form tokens and targets while keeping the disclosure and its sort control mounted.
+        const panels = [...document.querySelectorAll('.sidebar-tools-panel > details')];
+        const nextPanels = [...page.querySelectorAll('.sidebar-tools-panel > details')];
         if (!nextMain?.querySelector('#entries') || !nextMain.querySelector('.feed-header') || !nextNav || panels.length !== nextPanels.length)
             throw new Error('Feed Inbox returned an incomplete view.');
 
@@ -526,7 +527,17 @@
     }
     restoreGroups();
 
-    const feedSort = document.querySelector('.feed-sort');
+    const sidebarTools = document.querySelector('.sidebar-tools');
+    const feedSort = sidebarTools.querySelector('.feed-sort');
+    // Close the options panel on outside clicks or Escape, without changing the reading view.
+    document.addEventListener('click', event => {
+        if (sidebarTools.open && !sidebarTools.contains(event.target)) sidebarTools.open = false;
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key !== 'Escape' || event.defaultPrevented || !sidebarTools.open) return;
+        sidebarTools.open = false;
+        if (sidebarTools.contains(event.target)) sidebarTools.querySelector('summary').focus({ preventScroll: true });
+    });
     const feedSortKey = 'feed-inbox.feed-sort';
     const originalFeedOrder = new WeakMap();
     const feedNames = new Intl.Collator(undefined, { sensitivity: 'base' });
@@ -619,7 +630,7 @@
         }
     }
 
-    feedSort.hidden = false;
+    feedSort.closest('label').hidden = false;
     applyFeedSort();
     updateMoreFeeds();
     feedSort.addEventListener('change', () => {
