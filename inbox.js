@@ -266,6 +266,7 @@
         menuButton = button;
         button.setAttribute('aria-expanded', 'true');
         const menu = main.querySelector('.feed-menu');
+        menu.querySelector('[data-edit=shortcut]').hidden = !button.closest('.feed-row').querySelector('.feed.rss-feed');
         const anchor = button.getBoundingClientRect();
         // Place the shared menu outside the scrolling sidebar so the last row's menu cannot be clipped.
         menu.hidden = false;
@@ -294,13 +295,16 @@
         const dialog = main.querySelector('.feed-editor');
         const rename = dialog.querySelector('form[action="/rename-feed"]');
         const reorganize = dialog.querySelector('form[action="/reorganize-feed"]');
-        dialog.querySelector('h2').textContent = action === 'rename' ? 'Rename feed' : `Reorganize ${name}`;
+        const shortcut = dialog.querySelector('form[action="/feed-shortcut"]');
+        dialog.querySelector('h2').textContent = action === 'rename' ? 'Rename feed' : action === 'shortcut' ? `V shortcut for ${name}` : `Reorganize ${name}`;
         dialog.querySelector('.feed-editor-error').textContent = '';
         rename.hidden = action !== 'rename';
         reorganize.hidden = action !== 'reorganize';
-        const form = action === 'rename' ? rename : reorganize;
+        shortcut.hidden = action !== 'shortcut';
+        const form = action === 'rename' ? rename : action === 'shortcut' ? shortcut : reorganize;
         form.elements['edited-feed'].value = link.dataset.feed;
         if (action === 'rename') rename.elements.label.value = name;
+        else if (action === 'shortcut') shortcut.elements.open.value = link.dataset.openDiscussion === '1' ? 'discussion' : 'original';
         else {
             // Include hidden feed rows: unread filtering does not change membership.
             const groups = new Set([...nav.querySelectorAll('a.feed[data-feed]')].filter(a => a.dataset.feed === link.dataset.feed).map(a => a.dataset.group));
@@ -400,7 +404,7 @@
             return;
         }
         const action = form.getAttribute('action');
-        if (!['/check-feed', '/check', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed', '/import-opml'].includes(action)) return;
+        if (!['/check-feed', '/check', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed', '/feed-shortcut', '/import-opml'].includes(action)) return;
         event.preventDefault();
         if (busy || navigation) return;
         if (action === '/check-feed' || action === '/check') { await checkFeed(form); return; }
@@ -713,7 +717,7 @@
         else if (current !== selected) select(current, false);
         if (!selected) return;
         if (key === 'v') {
-            const target = selected.querySelector('a.original')?.href;
+            const target = selected.dataset.discussion || selected.querySelector('a.original')?.href;
             if (target) window.open(target, '_blank', 'noopener');
             return;
         }

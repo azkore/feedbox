@@ -110,12 +110,18 @@ internal sealed class RssCollector : IDisposable
             var payload = content == null ? "" : content.HasElements ? string.Concat(content.Nodes()) : content.Value;
             var contentType = content == null ? "" : (string)content.Attribute("type");
             var html = !atom || contentType == "html" || contentType == "xhtml";
+            var comments = atom ? entry.Elements(ns + "link").Where(e => (string)e.Attribute("rel") == "replies"
+                    && ((string)e.Attribute("type") ?? "text/html") == "text/html").Select(e => (string)e.Attribute("href")).FirstOrDefault()
+                : Value(entry, "comments");
+            Uri discussion = null;
+            bool hasDiscussion = !string.IsNullOrWhiteSpace(comments) && Uri.TryCreate(origin, comments, out discussion) && IsHttp(discussion);
             posts.Add(id, new Post { id = id, title = heading == "" ? original.AbsoluteUri : heading,
                 originalUrl = original.AbsoluteUri, path = "", author = Text(author, 120),
                 created = created.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
                 publicationKnown = hasDate && publication != "" && created <= now,
                 body = html ? Text(payload, 12000) : Bounded(payload.Trim(), 12000),
-                content = html && payload.Length <= MaxArticleHtml && payload.IndexOf('<') >= 0 ? payload : null });
+                content = html && payload.Length <= MaxArticleHtml && payload.IndexOf('<') >= 0 ? payload : null,
+                discussion = hasDiscussion ? discussion.AbsoluteUri : null });
         }
         if (posts.Count == 0 && entries.Any()) throw new InvalidDataException("The RSS feed has entries but no readable article links.");
         return posts.Values.ToList();

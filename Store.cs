@@ -21,6 +21,7 @@ internal sealed class Post
     public string body { get; set; }
     public string image { get; set; }
     public string content { get; set; }
+    public string discussion { get; set; }
 }
 
 internal sealed class Source
@@ -95,7 +96,7 @@ internal sealed class Store : IDisposable
         Check(sqlite3_busy_timeout(db, 5000));
         Run("PRAGMA journal_mode=WAL");
         var version = int.Parse(Query("PRAGMA user_version")[0][0], CultureInfo.InvariantCulture);
-        if (version < 0 || version > 12) throw new InvalidOperationException("Unsupported database version.");
+        if (version < 0 || version > 13) throw new InvalidOperationException("Unsupported database version.");
         Transaction(() =>
         {
             Run(@"CREATE TABLE IF NOT EXISTS sources (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1,
@@ -179,6 +180,13 @@ internal sealed class Store : IDisposable
                 Run("CREATE INDEX posts_arrival ON posts(arrival,id)");
                 Run("INSERT INTO settings VALUES ('last_arrival','0')");
                 Run("PRAGMA user_version=12");
+            }
+            if (version < 13)
+            {
+                // Retain the discussion destination independently of the headline link.
+                Run("ALTER TABLE posts ADD COLUMN discussion TEXT NOT NULL DEFAULT ''");
+                Run("ALTER TABLE sources ADD COLUMN open_discussion INTEGER NOT NULL DEFAULT 0");
+                Run("PRAGMA user_version=13");
             }
         });
     }
@@ -272,6 +280,15 @@ internal sealed class Store : IDisposable
         return rows.Count == 0 || string.IsNullOrEmpty(rows[0][0]) ? null : rows[0];
     }
 
+    public bool SetOpenDiscussion(string source, bool enabled)
+    {
+        lock (gate)
+        {
+            Run("UPDATE sources SET open_discussion=? WHERE name=? AND kind='rss'", enabled ? "1" : "0", source);
+            return Query("SELECT changes()")[0][0] == "1";
+        }
+    }
+
     public int RestoreRssBodies(string source, IEnumerable<Post> posts)
     {
         int updated = 0;
@@ -280,8 +297,8 @@ internal sealed class Store : IDisposable
             // Fill in HTML lost by the old collector. Never add rows or alter read state or dates here.
             foreach (var post in posts.Where(p => !string.IsNullOrEmpty(p.content)))
             {
-                Run("UPDATE posts SET content=? WHERE id=? AND source=? AND COALESCE(content,'')=''",
-                    post.content, post.id, source);
+                Run("UPDATE posts SET content=?,discussion=COALESCE(NULLIF(?,''),discussion) WHERE id=? AND source=? AND COALESCE(content,'')=''",
+                    post.content, post.discussion, post.id, source);
                 if (Query("SELECT changes()")[0][0] == "1") updated++;
             }
         });
@@ -567,8 +584,8 @@ internal sealed class Store : IDisposable
             if (inserted) { added++; arrival++; }
             if (keepExisting && !inserted) continue;
             // A shorter listing card must not erase context captured on an earlier check.
-            Run("UPDATE posts SET title=?,path=?,author=COALESCE(NULLIF(?,''),author),body=COALESCE(NULLIF(?,''),body),image=COALESCE(NULLIF(?,''),image),original_url=COALESCE(NULLIF(?,''),original_url),content=COALESCE(NULLIF(?,''),content) WHERE id=?",
-                 post.title, post.path, post.author, post.body, post.image, post.originalUrl, post.content != null && post.content.Length <= RssCollector.MaxArticleHtml ? post.content : null, post.id);
+            Run("UPDATE posts SET title=?,path=?,author=COALESCE(NULLIF(?,''),author),body=COALESCE(NULLIF(?,''),body),image=COALESCE(NULLIF(?,''),image),original_url=COALESCE(NULLIF(?,''),original_url),content=COALESCE(NULLIF(?,''),content),discussion=COALESCE(NULLIF(?,''),discussion) WHERE id=?",
+                 post.title, post.path, post.author, post.body, post.image, post.originalUrl, post.content != null && post.content.Length <= RssCollector.MaxArticleHtml ? post.content : null, post.discussion, post.id);
         }
         // Publish the sequence in the same transaction as the articles, including across restarts.
         if (added > 0) Run("UPDATE settings SET value=? WHERE key='last_arrival'", arrival.ToString(CultureInfo.InvariantCulture));
@@ -583,7 +600,7 @@ internal sealed class Store : IDisposable
     public List<string[]> Sidebar()
     {
         // Keep the reading sidebar independent of collection state.
-        return Query(@"SELECT s.name,s.status,SUM(CASE WHEN p.id IS NOT NULL AND p.read_at IS NULL THEN 1 ELSE 0 END),COALESCE(NULLIF(s.custom_label,''),s.label),s.coverage_note
+        return Query(@"SELECT s.name,s.status,SUM(CASE WHEN p.id IS NOT NULL AND p.read_at IS NULL THEN 1 ELSE 0 END),COALESCE(NULLIF(s.custom_label,''),s.label),s.coverage_note,s.open_discussion
             FROM sources s LEFT JOIN posts p ON p.source=s.name GROUP BY s.name ORDER BY s.name");
     }
 
@@ -622,7 +639,7 @@ internal sealed class Store : IDisposable
         var comparison = oldest ? ">" : "<";
         var order = oldest ? " ASC" : " DESC";
         var groupId = group.ToString(CultureInfo.InvariantCulture);
-        var sql = "SELECT id,source,title,original_url,published,read_at,author,body,image,CASE WHEN source LIKE 'rss\\_%' ESCAPE '\\' THEN CASE WHEN COALESCE(content,'')<>'' THEN '1' ELSE '' END ELSE content END,arrival FROM posts WHERE (?='' OR source=?)"
+        var sql = "SELECT id,source,title,original_url,published,read_at,author,body,image,CASE WHEN source LIKE 'rss\\_%' ESCAPE '\\' THEN CASE WHEN COALESCE(content,'')<>'' THEN '1' ELSE '' END ELSE content END,arrival,discussion FROM posts WHERE (?='' OR source=?)"
             + " AND (?='0' OR source IN (SELECT source FROM feed_group_members WHERE group_id=?))"
             + (unread ? " AND read_at IS NULL" : "") + PublicationFilter + SearchFilter;
         var args = new List<string> { source, source, groupId, groupId, dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc,

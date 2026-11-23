@@ -307,22 +307,27 @@ internal static class Tests
             {
                 var key = store.AddRss(url, 0);
                 var xml = "<rss version='2.0'><channel><title>RSS fixture</title><item><guid>fixture-1</guid><title>Album review</title><link>https://example.com/review</link>"
-                     + "<pubDate>Sun, 22 Nov 2026 16:05:55 +0000</pubDate>"
+                     + "<pubDate>Sun, 22 Nov 2026 16:05:55 +0000</pubDate><comments>/discussion</comments>"
                      + "<description><![CDATA[<p>A &amp; B</p><script>ignored</script>]]></description></item></channel></rss>";
                 using (var body = new MemoryStream(Encoding.UTF8.GetBytes(xml)))
                 {
                     var posts = RssCollector.Parse(body, url, key, out title);
-                     Expect(posts.Count == 1 && title == "RSS fixture" && posts[0].body == "A & B" && posts[0].originalUrl == "https://example.com/review" && posts[0].content.Contains("<p>A &amp; B</p>"), "RSS retains formatting and searchable text");
+                     Expect(posts.Count == 1 && title == "RSS fixture" && posts[0].body == "A & B" && posts[0].originalUrl == "https://example.com/review"
+                         && posts[0].discussion == "https://example.com/discussion", "RSS retains searchable text and the discussion destination");
                     Expect(store.Sources().Count == 0 && store.RssToCheck().Name == key, "RSS is due on its own schedule, outside the Reddit collector");
                     store.RecordAttempt(key);
                     Expect(store.RssToCheck() == null && store.RssToCheck(key).FeedUrl == url.AbsoluteUri, "RSS is deferred after an attempt but remains manually checkable");
                     store.SaveRss(key, title, posts);
                     string html;
                     var tokenPage = server.Url + "?feed=" + key;
-                     Expect(Request(tokenPage, "GET", null, null, out html) == 200 && html.Contains("iframe class=rss-body") && html.Contains("RSS fixture"), "RSS bodies use a separate frame");
+                     Expect(Request(tokenPage, "GET", null, null, out html) == 200 && html.Contains("iframe class=rss-body") && html.Contains("RSS fixture")
+                         && !html.Contains("data-discussion="), "RSS bodies use a separate frame; V opens the original by default");
                      var token = Regex.Match(html, "name=token value='([0-9a-f]+)'").Groups[1].Value;
                      Expect(Request(server.Url + "rss-body?id=" + posts[0].id, "GET", null, null, out html) == 200
                          && html.Contains("&lt;p&gt;A &amp;amp; B&lt;/p&gt;") && !html.Contains("<script>ignored"), "the frame starts with inert, escaped publisher HTML");
+                     Expect(Request(server.Url + "feed-shortcut", "POST", server.Url.TrimEnd('/'), "token=" + token + "&edited-feed=" + key + "&open=discussion", out html) == 303
+                         && Request(tokenPage, "GET", null, null, out html) == 200 && html.Contains("data-discussion='https://example.com/discussion'")
+                         && html.Contains("href='https://example.com/review'"), "the feed setting changes V's target without changing the headline link");
                     Expect(Request(server.Url + "read", "POST", server.Url.TrimEnd('/'), "token=" + token + "&id=" + posts[0].id + "&inline=1", out html) == 204
                         && store.SaveRss(key, title, posts) == 0 && store.Count(true, key) == 0, "refreshing an RSS entry preserves its read state");
 
@@ -352,12 +357,12 @@ internal static class Tests
                     Expect(Request(server.Url + "reorganize-feed", "POST", origin, edit + "&membership=999999", out html) == 400
                         && store.Groups().Count(g => g.Members.Contains(key)) == 2, "invalid folder choices cannot partially reorganize a feed");
                 }
-                 var atom = "<feed xmlns='http://www.w3.org/2005/Atom'><title>Atom fixture</title><entry><id>fixture-1</id><title>Entry</title><link rel='self' href='atom.xml'/><link href='/article'/><updated>2026-11-22T20:00:00Z</updated><summary type='text'>literal &lt;b&gt; text</summary></entry></feed>";
+                 var atom = "<feed xmlns='http://www.w3.org/2005/Atom'><title>Atom fixture</title><entry><id>fixture-1</id><title>Entry</title><link rel='self' href='atom.xml'/><link href='/article'/><link rel='replies' type='application/atom+xml' href='/replies.atom'/><link rel='replies' type='text/html' href='/replies'/><updated>2026-11-22T20:00:00Z</updated><summary type='text'>literal &lt;b&gt; text</summary></entry></feed>";
                  using (var body = new MemoryStream(Encoding.UTF8.GetBytes(atom)))
                  {
                      var item = RssCollector.Parse(body, url, Store.RssKey("other"), out title).Single();
-                     Expect(item.originalUrl == "https://example.com/article"
-                         && item.content == null && item.body == "literal <b> text", "Atom preserves literal plain text");
+                     Expect(item.originalUrl == "https://example.com/article" && item.discussion == "https://example.com/replies"
+                         && item.content == null && item.body == "literal <b> text", "Atom uses HTML replies for discussions and preserves literal plain text");
                  }
                 try
                 {

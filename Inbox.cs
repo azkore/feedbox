@@ -188,6 +188,11 @@ internal sealed class Inbox : IDisposable
                     // Keep the current feed open if its previous folder was unchecked.
                     if (form["feed"] == reorganized && !memberships.Contains(group)) group = memberships.FirstOrDefault();
                     break;
+                case "/feed-shortcut":
+                    var mode = form["open"];
+                    if ((mode != "original" && mode != "discussion") || !store.SetOpenDiscussion(SourceName(form["edited-feed"]), mode == "discussion"))
+                    { Reply(context, 400, "Choose a shortcut for an RSS or Atom feed."); return; }
+                    break;
                 case "/collection":
                     if (form["action"] != "pause" && form["action"] != "resume") { Reply(context, 400, "Choose pause or resume."); return; }
                     store.SetPaused(form["action"] == "pause");
@@ -315,7 +320,7 @@ internal sealed class Inbox : IDisposable
             foreach (var member in members)
             {
                 grouped.Add(member[0]);
-                html.Append(FeedLink(member[0], member[3], source, unread, countFor(member[0]), oldest, folder.Id, group, dates));
+                html.Append(FeedLink(member[0], member[3], source, unread, countFor(member[0]), oldest, folder.Id, group, dates, member[5] == "1"));
             }
             // Keep all member links in alphabetical order when the reader reveals the zero-unread feeds.
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div></section>");
@@ -325,7 +330,7 @@ internal sealed class Inbox : IDisposable
         {
             if (groups.Count > 0) html.Append("<div class=feed-section-label>Ungrouped</div>");
             html.Append("<div class=ungrouped-feeds id=ungrouped-feeds>");
-            foreach (var s in ungrouped) html.Append(FeedLink(s[0], s[3], source, unread, countFor(s[0]), oldest, 0, group, dates));
+            foreach (var s in ungrouped) html.Append(FeedLink(s[0], s[3], source, unread, countFor(s[0]), oldest, 0, group, dates, s[5] == "1"));
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div>");
         }
         if (groups.Count > 0) html.Append("<div hidden>").Append(Form("move-feed", "", unread, source, oldest, group, dates)).Append("</div>");
@@ -428,7 +433,11 @@ internal sealed class Inbox : IDisposable
             var day = valid ? published.LocalDateTime.ToString("D") : "Unknown date";
             if (headings && day != lastDay) html.Append("<h2>").Append(E(day)).Append("</h2>");
             lastDay = day;
-            html.Append("<article tabindex='-1' id='").Append(E(post[0])).Append("' data-post='").Append(E(post[0])).Append("' data-source='").Append(E(post[1]))
+            html.Append("<article tabindex='-1' id='").Append(E(post[0])).Append("' data-post='").Append(E(post[0])).Append("' data-source='").Append(E(post[1]));
+            Uri discussion;
+            if (byName.ContainsKey(post[1]) && byName[post[1]][5] == "1" && TryWebUrl(post[11], out discussion))
+                html.Append("' data-discussion='").Append(E(discussion.AbsoluteUri));
+            html
                 .Append("' data-published='").Append(E(post[4])).Append("' data-day='").Append(E(day))
                 .Append("' data-read='").Append(post[5] == null ? "0" : "1").Append("'><div class=article-inner><h3>");
             Uri original;
@@ -486,10 +495,12 @@ internal sealed class Inbox : IDisposable
                 .Append(E(folder.Name)).Append("</label>");
         choices.Append("</fieldset>");
         return "<div class=feed-menu hidden><button type=button data-edit=rename>Rename</button>"
-            + "<button type=button data-edit=reorganize>Reorganize feed</button></div>"
+            + "<button type=button data-edit=reorganize>Reorganize feed</button><button type=button data-edit=shortcut>V shortcut</button></div>"
             + "<dialog class=feed-editor aria-labelledby=feed-editor-title><h2 id=feed-editor-title></h2>"
             + Form("rename-feed", edited + "<label>Feed name <input name=label maxlength=120></label>" + actions, unread, source, oldest, group, dates)
             + Form("reorganize-feed", edited + choices + actions, unread, source, oldest, group, dates)
+            + Form("feed-shortcut", edited + "<label>V opens <select name=open><option value=original>Original article</option>"
+                + "<option value=discussion>Discussion (if available)</option></select></label>" + actions, unread, source, oldest, group, dates)
             + "<p class=feed-editor-error role=status></p></dialog>";
     }
 
@@ -598,11 +609,12 @@ internal sealed class Inbox : IDisposable
             + "><span aria-hidden=true>" + glyph + "</span></button>";
     }
 
-    private static string FeedLink(string source, string label, string selected, bool unread, long count, bool oldest, int group, int selectedGroup, ArticleFilter dates)
+    private static string FeedLink(string source, string label, string selected, bool unread, long count, bool oldest, int group, int selectedGroup, ArticleFilter dates, bool openDiscussion = false)
     {
         var link = "<a class='feed" + (source == "" && group > 0 ? " group-link" : "") + (IsRssKey(source) ? " rss-feed" : "")
             + "' href='" + E(ViewUrl(source, unread, oldest, group, dates)) + "' data-feed='" + E(source) + "' data-group='" + group + "'"
             + (source == "" ? " draggable=false" : " draggable=true")
+            + (openDiscussion ? " data-open-discussion=1" : "")
             + (source == selected && group == selectedGroup ? " aria-current=page" : "") + "><span class=feed-label>" + E(label)
             + "</span><span class=count>" + count.ToString(CultureInfo.InvariantCulture) + "</span></a>";
         if (source == "") return link;
