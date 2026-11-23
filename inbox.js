@@ -878,8 +878,7 @@
         updateArticleState(row, Boolean(state.read), Boolean(state.marked));
     }
 
-    async function advanceAfterMark(row, { keepForBackNavigation = false } = {}) {
-        const remove = !keepForBackNavigation && !inView(row.dataset.read === '1', row.dataset.marked === '1');
+    async function advanceAfterMark(row) {
         let articles = rows();
         const index = articles.indexOf(row);
         const more = document.querySelector('#more');
@@ -888,18 +887,13 @@
             articles = rows();
         }
         if (!row.isConnected || navigation) return;
-        // Remove items that leave the filter unless K should still be able to return to them.
-        const next = articles[index + 1], previous = articles[index - 1];
-        if (remove) {
-            const heading = row.previousElementSibling;
-            if (heading?.matches('h2') && !row.nextElementSibling?.matches('article')) heading.remove();
-            if (selected === row) selected = null;
-            row.remove();
-        }
+        // Keep the previous card available to K, even if its new state doesn't match the filter.
+        const next = articles[index + 1];
         if (next) select(next);
-        else if (remove && previous) select(previous);
-        else if (!remove) alignArticle(row);
-        if (!next) status.textContent = 'End of this view.';
+        else {
+            alignArticle(row);
+            status.textContent = 'End of this view.';
+        }
     }
 
     function mountRssBody(frame) {
@@ -978,7 +972,7 @@
                     await changeMark(row, 'opened');
                     // Like J, keep the opened card in the current list until the view is replaced.
                     if (row.isConnected && !navigation && !inView(row.dataset.read === '1', row.dataset.marked === '1'))
-                        await advanceAfterMark(row, { keepForBackNavigation: true });
+                        await advanceAfterMark(row);
                 }
             } catch (error) { showError(error); }
             finally { busy = false; }
