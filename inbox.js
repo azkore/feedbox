@@ -878,8 +878,8 @@
         updateArticleState(row, Boolean(state.read), Boolean(state.marked));
     }
 
-    async function advanceAfterMark(row) {
-        const fits = inView(row.dataset.read === '1', row.dataset.marked === '1');
+    async function advanceAfterMark(row, { keepForBackNavigation = false } = {}) {
+        const remove = !keepForBackNavigation && !inView(row.dataset.read === '1', row.dataset.marked === '1');
         let articles = rows();
         const index = articles.indexOf(row);
         const more = document.querySelector('#more');
@@ -888,17 +888,17 @@
             articles = rows();
         }
         if (!row.isConnected || navigation) return;
-        // Remove items that no longer fit, and remove their date heading only if it is now empty.
+        // Remove items that leave the filter unless K should still be able to return to them.
         const next = articles[index + 1], previous = articles[index - 1];
-        if (!fits) {
+        if (remove) {
             const heading = row.previousElementSibling;
             if (heading?.matches('h2') && !row.nextElementSibling?.matches('article')) heading.remove();
             if (selected === row) selected = null;
             row.remove();
         }
         if (next) select(next);
-        else if (!fits && previous) select(previous);
-        else if (fits) alignArticle(row);
+        else if (remove && previous) select(previous);
+        else if (!remove) alignArticle(row);
         if (!next) status.textContent = 'End of this view.';
     }
 
@@ -976,7 +976,9 @@
                     tab.opener = null;
                     tab.location.replace(target);
                     await changeMark(row, 'opened');
-                    if (row.isConnected && !navigation && !inView(row.dataset.read === '1', row.dataset.marked === '1')) await advanceAfterMark(row);
+                    // Like J, keep the opened card in the current list until the view is replaced.
+                    if (row.isConnected && !navigation && !inView(row.dataset.read === '1', row.dataset.marked === '1'))
+                        await advanceAfterMark(row, { keepForBackNavigation: true });
                 }
             } catch (error) { showError(error); }
             finally { busy = false; }
