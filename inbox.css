@@ -128,6 +128,12 @@ h1 { margin: 0; font-size: 15px; }
 .state-columns fieldset { display: grid; gap: 5px; border: 0; padding: 0; margin: 0; }
 .state-columns label { display: flex; gap: 4px; align-items: center; }
 .rss-body { display: block; width: 100%; height: 30px; border: 0; color-scheme: normal; }
+.check-all-controls { display: inline-flex; align-items: center; gap: 2px; }
+.check-types { position: relative; }
+.check-types > summary { list-style: none; padding: 2px 4px; }
+.check-types > summary::-webkit-details-marker { display: none; }
+/* Keep the selector attached to the fetch button without widening the reader toolbar. */
+.check-types > div { position: absolute; z-index: 3; top: 100%; right: 0; display: grid; gap: 5px; min-width: max-content; padding: 8px; background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; }
 .check-status { position: relative; }
 .check-status ul { position: absolute; z-index: 3; top: 100%; right: 0; width: min(360px, 78vw); max-height: 55vh; overflow: auto; list-style: none; margin: 7px 0; padding: 10px 14px; background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; box-shadow: 0 4px 15px #0002; }
 .check-status li { padding: 5px 0; }

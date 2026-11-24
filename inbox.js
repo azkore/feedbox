@@ -66,9 +66,67 @@
         }
     }
 
+    let batchRequest = false;
+    let batchPoll = false;
+
+    async function refreshBatchStatus() {
+        const feedback = header.querySelector('#check-feedback[data-check-batch]');
+        if (!feedback || batchRequest || batchPoll) return;
+        const form = header.querySelector('form[action="/check-all"]');
+        const wasRunning = feedback.dataset.running === '1';
+        batchPoll = true;
+        try {
+            const response = await fetch('/check-all-status');
+            if (!response.ok) return;
+            const { Running, Message } = await response.json();
+            if (!feedback.isConnected || batchRequest) return;
+            feedback.dataset.running = Running ? '1' : '0';
+            if (feedback.textContent !== Message) feedback.textContent = Message;
+            if (form) form.querySelector('button').disabled = Running;
+            if (wasRunning && !Running) {
+                refreshCheckStatus(header.querySelector('.check-status'));
+                refreshUnreadCounts();
+            }
+        } catch { /* A transient local connection error can be retried on the next poll. */ }
+        finally { batchPoll = false; }
+    }
+
+    async function checkAll(form) {
+        const button = form.querySelector('button');
+        if (button.disabled || batchRequest) return;
+        const feedback = header.querySelector('#check-feedback');
+        const fields = new URLSearchParams(new FormData(form));
+        fields.set('inline', '1');
+        form.querySelector('details').open = false;
+        button.disabled = true;
+        batchRequest = true;
+        try {
+            const response = await fetch(form.action, { method: 'POST', body: fields });
+            if (form.isConnected) feedback.textContent = await response.text();
+            if (!response.ok) return;
+            if (form.isConnected) feedback.dataset.running = '1';
+        } catch {
+            if (form.isConnected) feedback.textContent = 'Lost contact with feedbox.';
+        } finally {
+            batchRequest = false;
+            // Keep the button available for another attempt if the request did not start a batch.
+            if (form.isConnected) button.disabled = feedback.dataset.running === '1';
+        }
+        await refreshBatchStatus();
+    }
+
+    setInterval(() => {
+        if (!document.hidden && header.querySelector('#check-feedback').dataset.running === '1') refreshBatchStatus();
+    }, 3000);
+
     // Keep the result associated with its feed even if the reader switches away mid-check.
     const checks = new Map();
     function showCheck() {
+        const batchForm = header.querySelector('form[action="/check-all"]');
+        if (batchForm) {
+            batchForm.querySelector('button').disabled = batchRequest || header.querySelector('#check-feedback').dataset.running === '1';
+            return;
+        }
         const form = header.querySelector('form[action="/check-feed"], form[action="/check"]');
         if (!form) return;
         const state = checks.get(form.getAttribute('action') + ':' + form.elements.feed.value);
@@ -77,6 +135,7 @@
         button.disabled = state.pending;
         header.querySelector('#check-feedback').textContent = state.pending && state.seconds ? `${state.text} ${state.seconds}s` : state.text;
     }
+    showCheck();
 
     async function pageFrom(response) {
         if (!response.ok) throw new Error(await response.text() || 'Could not update the inbox.');
@@ -511,9 +570,10 @@
             return;
         }
         const action = form.getAttribute('action');
-        if (!['/check-feed', '/check', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed', '/feed-shortcut', '/delete-feed', '/import-opml'].includes(action)) return;
+        if (!['/check-feed', '/check', '/check-all', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed', '/feed-shortcut', '/delete-feed', '/import-opml'].includes(action)) return;
         event.preventDefault();
         if (busy || navigation) return;
+        if (action === '/check-all') { await checkAll(form); return; }
         if (action === '/check-feed' || action === '/check') { await checkFeed(form); return; }
 
         const button = event.submitter || form.querySelector('button');

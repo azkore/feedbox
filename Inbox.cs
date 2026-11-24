@@ -11,11 +11,25 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 
+internal sealed class FeedCheckStatus
+{
+    public bool Running { get; private set; }
+    public string Message { get; private set; }
+
+    public FeedCheckStatus(bool running, string message)
+    {
+        Running = running;
+        Message = message;
+    }
+}
+
 internal sealed class Inbox : IDisposable
 {
     private readonly HttpListener listener = new HttpListener();
     private readonly Store store;
     private readonly Func<string, Task<string>> check;
+    private readonly Func<bool, bool, bool> startBatch;
+    private readonly Func<FeedCheckStatus> batchStatus;
     private readonly string host;
     private readonly string token = Guid.NewGuid().ToString("N");
     private readonly string script = Resource("inbox.js");
@@ -24,10 +38,13 @@ internal sealed class Inbox : IDisposable
     private readonly byte[] merriweather = BinaryResource("Merriweather-Regular.ttf");
     public readonly string Url;
 
-    public Inbox(Store store, int port, Func<string, Task<string>> check)
+    public Inbox(Store store, int port, Func<string, Task<string>> check,
+        Func<bool, bool, bool> startBatch = null, Func<FeedCheckStatus> batchStatus = null)
     {
         this.store = store;
         this.check = check;
+        this.startBatch = startBatch;
+        this.batchStatus = batchStatus ?? (() => new FeedCheckStatus(false, ""));
         host = "127.0.0.1:" + port;
         Url = "http://" + host + "/";
         // Ask HTTP.sys for only the loopback prefix. No LAN listener or URL reservation is needed.
@@ -73,6 +90,11 @@ internal sealed class Inbox : IDisposable
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/check-status")
             {
                 Reply(context, 200, RenderCheckStatus(SourceName(query["feed"]), GroupId(query["group"]), store.IsPaused));
+                return;
+            }
+            if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/check-all-status")
+            {
+                Reply(context, 200, new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(batchStatus()), "application/json; charset=utf-8");
                 return;
             }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/unread-counts")
@@ -272,6 +294,15 @@ internal sealed class Inbox : IDisposable
                     var batchOutcome = await check(null);
                     if (form["inline"] == "1") { Reply(context, 200, batchOutcome, "text/plain; charset=utf-8"); return; }
                     break;
+                case "/check-all":
+                    if (group != 0 || !string.IsNullOrEmpty(form["feed"])) { Reply(context, 400, "Open All feeds to run this check."); return; }
+                    bool rssSelected = form["rss"] == "1", redditSelected = form["reddit"] == "1";
+                    if (!rssSelected && !redditSelected) { Reply(context, 400, "Select RSS or Reddit first."); return; }
+                    if (startBatch == null || !startBatch(rssSelected, redditSelected))
+                    { Reply(context, 409, "A check of all feeds is already running or collection is paused."); return; }
+                    // Large batches can outlast an HTTP request. Report progress from a separate endpoint.
+                    if (form["inline"] == "1") { Reply(context, 202, "Check queued."); return; }
+                    break;
                 case "/check-feed":
                     // An invalid target must never fall back to checking the scheduled batch.
                     var target = SourceName(form["feed"]);
@@ -402,10 +433,21 @@ internal sealed class Inbox : IDisposable
             if ((dates.Flags & ArticleFilter.Inbox) == ArticleFilter.Inbox) html.Append(Form("mark-feed-read", "<input type=hidden name=through value='" + arrival.ToString(CultureInfo.InvariantCulture) + "'>"
                 + IconButton("&#x2713;", "Mark all as read", tooltip: dates.Active || dates.Search != "" ? "Mark all matching articles as read in this feed" : "Mark all as read in this feed"), unread, source, oldest, group, dates));
         }
+        else if (!paused && group == 0 && source == "" && startBatch != null)
+        {
+            html.Append(Form("check-all", "<span class=check-all-controls>" + IconButton("&#x21BB;", "Check selected feed types")
+                + "<details class=check-types><summary aria-label='Choose feed types' title='Choose feed types'>&#x25be;</summary>"
+                + "<div><label><input type=checkbox name=rss value=1 checked> RSS</label>"
+                + "<label><input type=checkbox name=reddit value=1> Reddit</label></div></details></span>", unread, source, oldest, group, dates));
+        }
         else if (!paused) html.Append(Form("check", IconButton("&#x21BB;", "Check now"), unread, source, oldest, group, dates));
+        bool allFeeds = source == "" && group == 0;
+        var allStatus = allFeeds ? batchStatus() : new FeedCheckStatus(false, "");
         html.Append("<details class=check-status data-status-url='").Append(E("/check-status" + ViewUrl(source, true, false, group).Substring(1)))
             .Append("'><summary>Check status</summary>").Append(RenderCheckStatus(source, group, paused))
-            .Append("</details></div></div><p id=check-feedback role=status></p><p id=key-status role=status></p></header>");
+            .Append("</details></div></div><p id=check-feedback role=status").Append(allFeeds ? " data-check-batch" : "")
+            .Append(" data-running=").Append(allStatus.Running ? "1" : "0").Append('>')
+            .Append(E(allStatus.Message)).Append("</p><p id=key-status role=status></p></header>");
         long markedCount;
         var batch = query["batch"] ?? "";
         if (byName.ContainsKey(source) && long.TryParse(query["marked"], NumberStyles.None, CultureInfo.InvariantCulture, out markedCount))

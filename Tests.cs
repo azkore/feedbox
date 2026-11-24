@@ -153,6 +153,7 @@ internal static class Tests
             TestRedditCollectionStart();
             TestMarkFeedRead();
             TestDeleteFeed();
+            TestCheckAllTypes();
             TestRss();
             TestAppConfig();
             TestReadingTools();
@@ -389,6 +390,40 @@ internal static class Tests
                 store.DeleteFeed(rss);
                 Expect(store.SavePage(remove, new[] { target }, true) == 0 && store.SaveRss(rss, "Late reply", new[] { target }) == 0
                     && store.Count(false) == 1, "a collection response cannot restore articles after its feed was deleted");
+            }
+        }
+        finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix); }
+    }
+
+    private static void TestCheckAllTypes()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            int started = 0;
+            bool rss = false, reddit = false;
+            using (var store = new Store(path))
+            using (var server = new Inbox(store, 55000 + new Random().Next(5000), name => System.Threading.Tasks.Task.FromResult(""),
+                (r, d) => { rss = r; reddit = d; started++; return true; }, () => new FeedCheckStatus(started > 0, "Fixture progress")))
+            {
+                string html;
+                store.AddSource("single");
+                Request(server.Url, "GET", null, null, out html);
+                Expect(html.Contains("action='/check-all'") && html.Contains("name=rss value=1 checked")
+                    && html.Contains("name=reddit value=1>"), "All feeds offers RSS by default and Reddit as opt-in");
+                var token = Regex.Match(html, "name=token value='([0-9a-f]+)'").Groups[1].Value;
+                var form = "token=" + token + "&feed=&inline=1";
+                var route = server.Url + "check-all";
+                Expect(Request(route, "POST", server.Url.TrimEnd('/'), form, out html) == 400 && started == 0,
+                    "an empty selection does not start a batch");
+                Expect(Request(route, "POST", server.Url.TrimEnd('/'), form + "&rss=1", out html) == 202
+                    && rss && !reddit && started == 1, "the default starts an RSS-only batch");
+                Expect(Request(route, "POST", server.Url.TrimEnd('/'), form + "&reddit=1", out html) == 202
+                    && !rss && reddit && started == 2, "switching the selection starts a Reddit-only batch");
+                Expect(Request(server.Url + "check-all-status", "GET", null, null, out html) == 200
+                    && html.Contains("\"Running\":true") && html.Contains("Fixture progress"), "the batch can report progress after the request returns");
+                Request(server.Url + "?feed=single", "GET", null, null, out html);
+                Expect(!html.Contains("action='/check-all'") && html.Contains("action='/check-feed'"), "single feed checks keep their existing control");
             }
         }
         finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix); }

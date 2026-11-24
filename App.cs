@@ -24,6 +24,8 @@ internal sealed class App : Form
     private bool running, ready, needsSignIn, exiting;
     private Task<string> rssCheck;
     private string rssFeed;
+    private bool checkingAllRss, checkingAllReddit;
+    private volatile FeedCheckStatus allCheckStatus = new FeedCheckStatus(false, "");
 
     [STAThread]
     private static void Main(string[] args)
@@ -57,7 +59,8 @@ internal sealed class App : Form
         this.profile = profile;
         collector = new Collector(store);
         // Start on the WebView thread, but give the browser the task for this particular check.
-        inbox = new Inbox(store, port, feed => (Task<string>)Invoke(new Func<Task<string>>(() => CheckRequested(feed))));
+        inbox = new Inbox(store, port, feed => (Task<string>)Invoke(new Func<Task<string>>(() => CheckRequested(feed))),
+            (includeRss, includeReddit) => (bool)Invoke(new Func<bool>(() => StartAllChecks(includeRss, includeReddit))), () => allCheckStatus);
         Text = "feedbox - Reddit sign-in";
         ClientSize = new Size(1060, 800);
         ShowInTaskbar = false;
@@ -178,9 +181,101 @@ internal sealed class App : Form
         return store.RssToCheck(feed) != null ? await CheckRss(feed) : await Check(true, feed);
     }
 
+    private sealed class CheckProgress
+    {
+        public readonly string Type;
+        public readonly string[] Feeds;
+        public int Checked, Failed;
+        public string Detail;
+
+        public CheckProgress(string type, string[] feeds) { Type = type; Feeds = feeds; }
+
+        public string Describe()
+        {
+            return Type + ": " + Checked + "/" + Feeds.Length + " checked" + (Failed == 0 ? "" : ", " + Failed + " failed")
+                + (Detail == null ? "." : ". " + Detail);
+        }
+    }
+
+    private bool StartAllChecks(bool includeRss, bool includeReddit)
+    {
+        if (exiting || allCheckStatus.Running || store.IsPaused) return false;
+        // Take a snapshot of subscriptions, regardless of the next scheduled check time.
+        var rssBatch = includeRss ? new CheckProgress("RSS", store.RssSubscriptions().Select(row => row[0]).ToArray()) : null;
+        var redditBatch = includeReddit ? new CheckProgress("Reddit", store.Sources().Select(source => source.Name).ToArray()) : null;
+        checkingAllRss = rssBatch != null;
+        checkingAllReddit = redditBatch != null;
+        RunAllChecks(rssBatch, redditBatch);
+        return true;
+    }
+
+    private async void RunAllChecks(CheckProgress rssBatch, CheckProgress redditBatch)
+    {
+        var batches = new[] { rssBatch, redditBatch }.Where(batch => batch != null).ToArray();
+        Func<string> describe = () => string.Join(" ", batches.Select(batch => batch.Describe()));
+        Action report = () => allCheckStatus = new FeedCheckStatus(true, describe());
+        report();
+        try
+        {
+            // Return the HTTP acknowledgement before starting checks; Reddit and RSS can progress independently.
+            await Task.Yield();
+            await Task.WhenAll(RunFeedBatch(rssBatch, false, report), RunFeedBatch(redditBatch, true, report));
+            var stopped = !exiting && store.IsPaused && batches.Any(batch => batch.Checked < batch.Feeds.Length);
+            allCheckStatus = new FeedCheckStatus(false, (stopped ? "Collection paused. " : "") + describe());
+        }
+        catch (Exception)
+        {
+            allCheckStatus = new FeedCheckStatus(false, "Could not complete the feed check. " + describe());
+        }
+        finally { checkingAllRss = checkingAllReddit = false; }
+    }
+
+    private async Task RunFeedBatch(CheckProgress batch, bool reddit, Action report)
+    {
+        if (batch == null) return;
+        try
+        {
+            foreach (var feed in batch.Feeds)
+            {
+                if (exiting || store.IsPaused) return;
+                if (!store.HasSource(feed)) continue;
+                if (reddit)
+                {
+                    // Wait for a request slot without bypassing the shared budget or a rate-limit cooldown.
+                    while (true)
+                    {
+                        if (exiting || store.IsPaused) return;
+                        if (!ready || Visible || needsSignIn)
+                        {
+                            batch.Detail = Visible ? "Close the Reddit sign-in window before checking." : "The Reddit collector is not ready.";
+                            return;
+                        }
+                        var limit = store.RedditLimit(DateTimeOffset.UtcNow, false);
+                        if (!running && limit == null) break;
+                        batch.Detail = limit ?? "Waiting for the current Reddit check.";
+                        report();
+                        await Task.Delay(TimeSpan.FromSeconds(10));
+                    }
+                }
+                batch.Detail = null;
+                var outcome = reddit ? await Check(true, feed) : await CheckRss(feed);
+                batch.Checked++;
+                if (outcome != "No new posts found." && !outcome.StartsWith("Added ", StringComparison.Ordinal)) batch.Failed++;
+                report();
+            }
+        }
+        finally
+        {
+            // Let the normal schedule resume for each type as soon as its own batch ends.
+            if (reddit) checkingAllReddit = false;
+            else checkingAllRss = false;
+            report();
+        }
+    }
+
     private async Task<string> CheckRss(string name = null)
     {
-        if (exiting || (name == null && store.IsPaused)) return "";
+        if (exiting || (name == null && (store.IsPaused || checkingAllRss))) return "";
         if (rssCheck != null && !rssCheck.IsCompleted)
         {
             // A just-added feed can be picked up by the timer before its manual check starts.
@@ -211,6 +306,7 @@ internal sealed class App : Form
     {
         // Only an explicit single-feed request can run while scheduled collection is paused.
         bool single = manual && feed != null;
+        if (!single && checkingAllReddit) return "A check of all Reddit feeds is already running.";
         if (!ready || running || Visible || exiting || (!single && store.IsPaused) || (needsSignIn && !manual))
         {
             return running ? "Another check is already running." : Visible ? "Close the Reddit sign-in window before checking." : "The collector is not ready to check.";
