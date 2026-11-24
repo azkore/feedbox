@@ -155,6 +155,7 @@ internal static class Tests
             TestDeleteFeed();
             TestCheckAllTypes();
             TestRss();
+            TestPublisherPreview();
             TestAppConfig();
             TestReadingTools();
             TestMarkedArticles();
@@ -165,6 +166,22 @@ internal static class Tests
         {
             foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix);
         }
+    }
+
+    private static void TestPublisherPreview()
+    {
+        var article = new Uri("https://example.com/news/story");
+        var html = "<!-- <meta property='og:image' content='/ignored.jpg'> -->"
+            + "<script>const text = `<meta property='og:image' content='/also-ignored.jpg'>`;</script>"
+            + "<meta name=twitter:image content=/fallback.jpg>"
+            + "<META content='../image.jpg?a=1&amp;b=2' PROPERTY='og:image' />";
+        Expect(PublisherPreview.FindImage(html, article).AbsoluteUri == "https://example.com/image.jpg?a=1&b=2"
+            && PublisherPreview.FindImage("<meta name=twitter:image content=/fallback.jpg>", article).AbsoluteUri == "https://example.com/fallback.jpg",
+            "publisher previews resolve relative metadata, prefer Open Graph and ignore markup in scripts and comments");
+        Expect(PublisherPreview.FindImage("<meta property=og:image content='file:///image.jpg'>", article) == null
+            && PublisherPreview.Lookup("http://[::ffff:127.0.0.1]/").GetAwaiter().GetResult() == null
+            && PublisherPreview.Lookup("http://169.254.169.254/").GetAwaiter().GetResult() == null,
+            "previews do not fetch local, link-local or non-web URLs");
     }
 
     private static void TestInterruptedResponse()

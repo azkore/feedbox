@@ -257,6 +257,7 @@
                 view.insertBefore(heading, row);
             }
             if (anchor) window.scrollBy(0, anchor.getBoundingClientRect().top - top);
+            for (const row of incoming) observePublisherPreview(row);
         }
         view.dataset.arrival = delta.dataset.arrival;
         const bulk = header.querySelector('form[action="/mark-feed-read"]');
@@ -282,6 +283,7 @@
         const statusOpen = sameView && header.querySelector('.check-status').open;
         closeFeedMenu();
         closeCountTip();
+        previewObserver.disconnect();
         nav.replaceChildren(...nextNav.children);
         panels.forEach((panel, i) => panel.replaceChildren(...nextPanels[i].children));
         main.replaceChildren(...nextMain.children);
@@ -289,6 +291,7 @@
         document.body.dataset.unread = page.body.dataset.unread;
         document.body.dataset.flags = page.body.dataset.flags;
         entries = main.querySelector('#entries');
+        observePublisherPreviews();
         header = main.querySelector('.feed-header');
         status = main.querySelector('#key-status');
         header.querySelector('.check-status').open = statusOpen;
@@ -886,7 +889,9 @@
         const lastDay = Array.from(entries.querySelectorAll('h2')).at(-1);
         if (nextEntries.firstElementChild?.tagName === 'H2' && nextEntries.firstElementChild.textContent === lastDay?.textContent)
             nextEntries.firstElementChild.remove();
-        entries.append(...nextEntries.children);
+        const appended = [...nextEntries.children];
+        entries.append(...appended);
+        for (const row of appended) observePublisherPreview(row);
         const more = nextPage.querySelector('#more');
         if (more) link.setAttribute('href', more.getAttribute('href'));
         else link.remove();
@@ -971,6 +976,44 @@
         }
     }
 
+    const previewObserver = new IntersectionObserver(changes => {
+        for (const change of changes) {
+            if (!change.isIntersecting || !change.target.isConnected) continue;
+            previewObserver.unobserve(change.target);
+            loadPublisherPreview(change.target);
+        }
+    });
+
+    function observePublisherPreview(row) {
+        if (row.matches('article[data-publisher-preview]') && !row.querySelector('iframe.rss-body')) previewObserver.observe(row);
+    }
+
+    function observePublisherPreviews() {
+        for (const row of entries.querySelectorAll('article[data-publisher-preview]')) observePublisherPreview(row);
+    }
+
+    async function loadPublisherPreview(row) {
+        // Each mounted card gets one lookup. J/K keeps the card and its image in place.
+        if (!row.hasAttribute('data-publisher-preview')) return;
+        row.removeAttribute('data-publisher-preview');
+        try {
+            const fields = new URLSearchParams({ id: row.dataset.post, token: row.querySelector('form[action="/read"] input[name="token"]').value });
+            const response = await fetch('/publisher-preview', { method: 'POST', body: fields });
+            if (response.status !== 200) return;
+            const url = new URL(await response.text());
+            if (!row.isConnected || row.querySelector('img.preview') || !['https:', 'http:'].includes(url.protocol)) return;
+            const image = document.createElement('img');
+            image.className = 'preview';
+            image.alt = 'Publisher preview';
+            image.referrerPolicy = 'no-referrer';
+            image.loading = 'lazy';
+            image.addEventListener('error', () => image.remove(), { once: true });
+            image.src = url.href;
+            const inner = row.querySelector('.article-inner');
+            inner.insertBefore(image, inner.querySelector('iframe.rss-body, .context'));
+        } catch { /* Missing metadata or a failed request leaves the feed article as it was. */ }
+    }
+
     function mountRssBody(frame) {
         const doc = frame.contentDocument;
         const payload = doc?.getElementById('rss-payload');
@@ -998,6 +1041,12 @@
             element.removeAttribute('ping');
         }
         body.append(template.content);
+        // Give images already present in the RSS body priority over a publisher lookup.
+        const row = frame.closest('article[data-publisher-preview]');
+        if (row) {
+            if (body.querySelector('img[src], img[srcset], video[poster]')) row.removeAttribute('data-publisher-preview');
+            else previewObserver.observe(row);
+        }
         // Let long text and late-loading images size the frame without creating an inner scroller.
         const fit = () => { frame.style.height = `${Math.max(1, Math.ceil(body.getBoundingClientRect().height))}px`; };
         new ResizeObserver(fit).observe(body);
@@ -1010,6 +1059,7 @@
     }, true);
     // A cached body may have loaded while the deferred script was starting.
     for (const frame of document.querySelectorAll('iframe.rss-body')) mountRssBody(frame);
+    observePublisherPreviews();
 
     async function handleReaderKey(event, frameRow = null) {
         if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.ctrlKey || event.metaKey

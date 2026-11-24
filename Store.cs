@@ -311,6 +311,12 @@ internal sealed class Store : IDisposable
         return rows.Count == 0 || string.IsNullOrEmpty(rows[0][0]) ? null : rows[0];
     }
 
+    public string RssArticleUrl(string id)
+    {
+        var rows = Query("SELECT p.original_url FROM posts p JOIN sources s ON s.name=p.source WHERE p.id=? AND s.kind='rss' AND COALESCE(p.image,'')=''", id);
+        return rows.Count == 0 ? "" : rows[0][0];
+    }
+
     public bool SetOpenDiscussion(string source, bool enabled)
     {
         lock (gate)

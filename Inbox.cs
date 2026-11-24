@@ -161,6 +161,13 @@ internal sealed class Inbox : IDisposable
             // Only an explicit read/unread form can change read state.
             switch (request.Url.AbsolutePath)
             {
+                case "/publisher-preview":
+                    // Only look up the original URL of a stored RSS article, never an address supplied by the request.
+                    var previewId = form["id"] ?? "";
+                    var previewUrl = IsRssKey(previewId) ? await PublisherPreview.Lookup(store.RssArticleUrl(previewId)) : null;
+                    if (previewUrl == null) { context.Response.StatusCode = 204; return; }
+                    Reply(context, 200, previewUrl.AbsoluteUri, "text/plain; charset=utf-8");
+                    return;
                 case "/source":
                     var name = (form["name"] ?? "").Trim();
                     if (name.StartsWith("r/", StringComparison.OrdinalIgnoreCase)) name = name.Substring(2);
@@ -567,7 +574,9 @@ internal sealed class Inbox : IDisposable
                 html.Append("' data-discussion='").Append(E(discussion.AbsoluteUri));
             html
                 .Append("' data-published='").Append(E(post[4])).Append("' data-day='").Append(E(day))
-                .Append("' data-read='").Append(post[5] == null ? "0" : "1").Append("' data-marked='").Append(post[12]).Append("'><div class=article-inner><h3>");
+                .Append("' data-read='").Append(post[5] == null ? "0" : "1").Append("' data-marked='").Append(post[12]).Append('\'');
+            if (IsRssKey(post[1]) && post[8] == "") html.Append(" data-publisher-preview");
+            html.Append("><div class=article-inner><h3>");
             Uri original;
             if (TryWebUrl(post[3], out original))
                 html.Append("<a class=original target=_blank rel=noopener href='").Append(E(original.AbsoluteUri)).Append("'>").Append(E(post[2])).Append("</a>");
@@ -841,7 +850,7 @@ internal sealed class Inbox : IDisposable
         response.Headers["X-Content-Type-Options"] = "nosniff";
         response.Headers["Content-Security-Policy"] = rssFrame
             ? "default-src 'none'; style-src 'unsafe-inline' http: https:; img-src http: https: data:; font-src http: https: data:; media-src http: https: data:; base-uri http: https:; form-action 'none'; frame-ancestors 'self'; sandbox allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-            : "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src https://i.redd.it https://preview.redd.it https://external-preview.redd.it; frame-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+            : "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src http: https:; frame-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
         response.ContentLength64 = bytes.Length;
         response.OutputStream.Write(bytes, 0, bytes.Length);
     }
