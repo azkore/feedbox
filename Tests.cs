@@ -235,7 +235,7 @@ internal static class Tests
                     && store.Sidebar().Single(row => row[0] == feed)[3] == "My feed" && store.Groups().Single(g => g.Id == group).Members.Contains(feed),
                     "a stale URL leaves the name and memberships intact");
                 Expect(Request(settingsRoute, "POST", origin, settings + Store.RssKey(next.AbsoluteUri) + "&url=" + Uri.EscapeDataString(newUrl), out html) == 303
-                    && store.RssToCheck(feed).FeedUrl == newUrl && store.Sidebar().Single(row => row[0] == feed).Skip(3).SequenceEqual(new[] { "Renamed", "", "1" })
+                    && store.RssToCheck(feed).FeedUrl == newUrl && store.Sidebar().Single(row => row[0] == feed).Skip(3).Take(3).SequenceEqual(new[] { "Renamed", "", "1" })
                     && store.Groups().Single(g => g.Members.Contains(feed)).Id == otherGroup && store.Count(true, feed) == 0,
                     "saving feed settings updates the URL, name, group and open action without changing read state");
             }
@@ -815,10 +815,32 @@ internal static class Tests
                 // Simulate an exhausted listing after the newer page was saved.
                 rss.Head = recent.id;
                 store.RecordGap(rss, "Possible gap.");
-                store.Note("rss", "No new posts found.");
-                Expect(store.Sources().Single(s => s.Name == "rss").Anchors == recent.id
-                    && store.Sidebar().Single(r => r[0] == "rss")[4].Contains("Possible earlier gap"),
-                    "an exhausted listing adopts its saved head and retains the gap after another check");
+                store.Note("rss", "No new posts added. Page limit reached. The next check will continue here.");
+                using (var server = new Inbox(store, 55000 + new Random().Next(5000), name => System.Threading.Tasks.Task.FromResult("")))
+                {
+                    string html;
+                    var url = server.Url + "check-status?feed=rss";
+                    Expect(Request(url, "GET", null, null, out html) == 200 && html.Contains("class=check-warning"),
+                        "a fresh gap stays red through a partial check");
+
+                    // A clean overlap check clears the active warning while retaining the historical note.
+                    rss = store.Sources().Single(s => s.Name == "rss");
+                    Expect(rss.Anchors == recent.id, "an exhausted listing adopts its saved head");
+                    rss.Head = recent.id;
+                    rss.Status = "";
+                    store.SavePage(rss, new Post[0], true);
+                    store.Note("rss", "No new posts found.");
+                    Expect(Request(url, "GET", null, null, out html) == 200 && !html.Contains("class=check-warning")
+                        && html.Contains("No new posts found.<br><span class=coverage-history>Possible earlier gap:"),
+                        "a clean check leaves the earlier gap as a muted note below the result");
+                    Expect(Request(server.Url + "unread-counts", "GET", null, null, out html) == 200
+                        && !Regex.Match(html, @"""warnings"":\[[^\]]*\]").Value.Contains("\"rss\""),
+                        "sidebar refresh does not flag a historical gap");
+
+                    store.Note("rss", "Reddit returned HTTP 403.");
+                    Expect(Request(url, "GET", null, null, out html) == 200 && html.Contains("class=check-warning") && html.Contains("class=coverage-history"),
+                        "a new error is red without reactivating the historical gap");
+                }
             }
         }
         finally

@@ -104,7 +104,7 @@ internal sealed class Inbox : IDisposable
                 var archive = query["feed"] == null ? null : ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]));
                 Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival(), archive,
                      icons = store.Icons.Available(), pausedFeeds = store.PausedFeeds().ToArray(),
-                     warnings = store.FeedCheckHealth().Where(row => HasCheckWarning(row[1], row[2])).Select(row => row[0]).ToArray() }),
+                     warnings = store.FeedCheckHealth().Where(row => HasCheckWarning(row[1], row[2] == "1")).Select(row => row[0]).ToArray() }),
                     "application/json; charset=utf-8");
                 return;
             }
@@ -472,7 +472,7 @@ internal sealed class Inbox : IDisposable
             {
                 grouped.Add(member[0]);
                 html.Append(FeedLink(member[0], member[3], source, unread, countFor(member[0]), oldest, folder.Id, group, dates, member[5] == "1",
-                     icons.Contains(member[0]), HasCheckWarning(member[1], member[4]), pausedFeeds.Contains(member[0])));
+                     icons.Contains(member[0]), HasCheckWarning(member[1], member[6] == "1"), pausedFeeds.Contains(member[0])));
             }
             // Keep all member links in alphabetical order when the reader reveals the zero-unread feeds.
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div></section>");
@@ -483,7 +483,7 @@ internal sealed class Inbox : IDisposable
             if (groups.Count > 0) html.Append("<div class=feed-section-label>Ungrouped</div>");
             html.Append("<div class=ungrouped-feeds id=ungrouped-feeds>");
             foreach (var s in ungrouped) html.Append(FeedLink(s[0], s[3], source, unread, countFor(s[0]), oldest, 0, group, dates, s[5] == "1",
-                 icons.Contains(s[0]), HasCheckWarning(s[1], s[4]), pausedFeeds.Contains(s[0])));
+                 icons.Contains(s[0]), HasCheckWarning(s[1], s[6] == "1"), pausedFeeds.Contains(s[0])));
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div>");
         }
         if (groups.Count > 0) html.Append("<div hidden>").Append(Form("move-feed", "", unread, source, oldest, group, dates)).Append("</div>");
@@ -739,10 +739,10 @@ internal sealed class Inbox : IDisposable
             + "<p class=feed-editor-error role=status></p></dialog>";
     }
 
-    private static bool HasCheckWarning(string status, string coverage)
+    private static bool HasCheckWarning(string status, bool pendingGap)
     {
-        // A successful latest check does not resolve a gap in earlier coverage.
-        if (!string.IsNullOrWhiteSpace(coverage)) return true;
+        // A gap stays red through deferred or incomplete checks until a clean completion.
+        if (pendingGap) return true;
         // A Reddit check can save some posts before encountering a problem. Classify what follows the count.
         var detail = Regex.Replace(status ?? "", @"\A(?:No new posts (?:found|added)\.|Added \d+ new posts?\.)\s*", "").Trim();
         return detail != "" && detail != "Check paused." && detail != "Checking older pages for overlap."
@@ -764,7 +764,8 @@ internal sealed class Inbox : IDisposable
         foreach (var row in rows)
         {
             // The stored attempt still counts if Reddit returned an error; deferred checks do not change it.
-            html.Append(row[4] == "1" ? "<li><b class=feed-paused>" : HasCheckWarning(row[1], row[2]) ? "<li><b class=check-warning>" : "<li><b>").Append(E(row[0])).Append("</b> ");
+            var pendingGap = row[5] == "1";
+            html.Append(row[4] == "1" ? "<li><b class=feed-paused>" : HasCheckWarning(row[1], pendingGap) ? "<li><b class=check-warning>" : "<li><b>").Append(E(row[0])).Append("</b> ");
             if (row[4] == "1") html.Append("<span class=check-age>Feed paused. </span>");
             DateTimeOffset attempted;
             if (DateTimeOffset.TryParseExact(row[3], "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out attempted))
@@ -777,8 +778,10 @@ internal sealed class Inbox : IDisposable
             // The old first-check message has no post count and says nothing about the archive import.
             var status = row[1] == "Starting batch saved. Older history was not imported." ? "" :
                 string.IsNullOrWhiteSpace(row[1]) ? "No check result recorded." : row[1];
-            var detail = (status + " " + row[2]).Trim();
-            if (detail != "") html.Append("<br>").Append(E(detail));
+            if (status != "") html.Append("<br>").Append(E(status));
+            // Preserve the date and uncertainty of the gap after ordinary collection recovers.
+            if (!string.IsNullOrWhiteSpace(row[2]))
+                html.Append(pendingGap ? "<br><span>" : "<br><span class=coverage-history>").Append(E(row[2])).Append("</span>");
             html.Append("</li>");
         }
         return html.Append("</ul>").ToString();

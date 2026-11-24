@@ -154,7 +154,7 @@ h1 { margin: 0; font-size: 15px; }
 .check-status { position: relative; }
 .check-status ul { position: absolute; z-index: 3; top: 100%; right: 0; width: min(360px, 78vw); max-height: 55vh; overflow: auto; list-style: none; margin: 7px 0; padding: 10px 14px; background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; box-shadow: 0 4px 15px #0002; }
 .check-status li { padding: 5px 0; }
-.check-age { color: var(--muted); }
+.check-age, .coverage-history { color: var(--muted); }
 .check-status li button { margin-left: 5px; }
 #key-status { margin: 0; padding: 5px 0; color: var(--muted); }
 #key-status:empty, #check-feedback:empty { display: none; }

@@ -113,7 +113,7 @@ internal sealed class Store : IDisposable
         Check(sqlite3_busy_timeout(db, 5000));
         Run("PRAGMA journal_mode=WAL");
         var version = int.Parse(Query("PRAGMA user_version")[0][0], CultureInfo.InvariantCulture);
-        if (version < 0 || version > 16) throw new InvalidOperationException("Unsupported database version.");
+        if (version < 0 || version > 17) throw new InvalidOperationException("Unsupported database version.");
         Transaction(() =>
         {
             Run(@"CREATE TABLE IF NOT EXISTS sources (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1,
@@ -224,6 +224,14 @@ internal sealed class Store : IDisposable
                 // Individual pauses start unset; the existing global setting remains authoritative.
                 Run("ALTER TABLE sources ADD COLUMN feed_paused INTEGER NOT NULL DEFAULT 0");
                 Run("PRAGMA user_version=16");
+            }
+            if (version < 17)
+            {
+                // Use the latest saved result to distinguish old notes from gaps still awaiting a clean check.
+                Run("ALTER TABLE sources ADD COLUMN coverage_pending INTEGER NOT NULL DEFAULT 0");
+                Run(@"UPDATE sources SET coverage_pending=1 WHERE coverage_note<>'' AND status<>'No new posts found.'
+                    AND status NOT GLOB 'Added [0-9]* new post.' AND status NOT GLOB 'Added [0-9]* new posts.'");
+                Run("PRAGMA user_version=17");
             }
         });
     }
@@ -707,7 +715,7 @@ internal sealed class Store : IDisposable
     {
         // Start future checks from this walk's newest saved posts rather than repeatedly chasing unreachable IDs.
         Run(@"UPDATE sources SET anchors=CASE WHEN ?='' THEN anchors ELSE ? END, cursor='',head='',seen='',extra=0,
-            status=?,coverage_note=CASE WHEN coverage_note='' THEN ? ELSE coverage_note END WHERE name=?", scan.Head, scan.Head,
+            status=?,coverage_pending=1,coverage_note=CASE WHEN coverage_note='' THEN ? ELSE coverage_note END WHERE name=?", scan.Head, scan.Head,
             status, "Possible earlier gap: the check could not reach previously saved posts on " + DateTimeOffset.UtcNow.ToLocalTime().ToString("g") + ".", scan.Name);
     }
 
@@ -724,7 +732,7 @@ internal sealed class Store : IDisposable
                 var candidates = Query(@"SELECT id FROM posts WHERE source=? AND published<=? ORDER BY published DESC,id DESC LIMIT 24",
                     row[0], Stamp(settledThrough)).Select(p => p[0]).Where(id => Regex.IsMatch(id, @"\At3_[a-z0-9]+\z")).ToArray();
                 if (candidates.Length == 0)
-                    Run("UPDATE sources SET coverage_note=? WHERE name=?", "Archive overlap could not be set up: no earlier saved posts to compare.", row[0]);
+                    Run("UPDATE sources SET coverage_note=?,coverage_pending=1 WHERE name=?", "Archive overlap could not be set up: no earlier saved posts to compare.", row[0]);
                 else
                     Run("UPDATE sources SET anchors=? WHERE name=?", string.Join(",", candidates), row[0]);
                 result.Add(new[] { row[0], candidates.Length == 0 ? "no earlier posts" : "seeded", candidates.Length.ToString(CultureInfo.InvariantCulture) });
@@ -743,8 +751,9 @@ internal sealed class Store : IDisposable
             // Commit the page and the cursor together so a restart cannot skip unsaved posts.
             var remaining = scan.InitialRemaining.ToString(CultureInfo.InvariantCulture);
             if (complete)
-                Run("UPDATE sources SET anchors=?,cursor='',head='',seen='',extra=0,status=?,reddit_floor=?,reddit_initial_remaining=?,reddit_initial_ids=? WHERE name=?",
-                     scan.Head, scan.Status, scan.RedditFloor, remaining, scan.InitialIds, scan.Name);
+                // A clean completion clears the current warning, not the historical note.
+                Run("UPDATE sources SET anchors=?,cursor='',head='',seen='',extra=0,status=?,reddit_floor=?,reddit_initial_remaining=?,reddit_initial_ids=?,coverage_pending=CASE WHEN ?='' THEN 0 ELSE coverage_pending END WHERE name=?",
+                     scan.Head, scan.Status, scan.RedditFloor, remaining, scan.InitialIds, scan.Status, scan.Name);
             else
                 Run("UPDATE sources SET cursor=?,head=?,seen=?,extra=?,status=?,reddit_floor=?,reddit_initial_remaining=?,reddit_initial_ids=? WHERE name=?",
                      scan.Cursor, scan.Head, scan.Seen, scan.ExtraPage ? "1" : "0", scan.Status, scan.RedditFloor, remaining, scan.InitialIds, scan.Name);
@@ -790,14 +799,14 @@ internal sealed class Store : IDisposable
     public List<string[]> Sidebar()
     {
         // Keep the reading sidebar independent of collection state.
-        return Query(@"SELECT s.name,s.status,SUM(CASE WHEN p.id IS NOT NULL AND p.read_at IS NULL THEN 1 ELSE 0 END),COALESCE(NULLIF(s.custom_label,''),s.label),s.coverage_note,s.open_discussion
+        return Query(@"SELECT s.name,s.status,SUM(CASE WHEN p.id IS NOT NULL AND p.read_at IS NULL THEN 1 ELSE 0 END),COALESCE(NULLIF(s.custom_label,''),s.label),s.coverage_note,s.open_discussion,s.coverage_pending
             FROM sources s LEFT JOIN posts p ON p.source=s.name GROUP BY s.name ORDER BY s.name");
     }
 
     public List<string[]> CheckStatuses(string source, int group)
     {
         // Refresh collector status without querying or re-rendering the reading queue.
-        return Query(@"SELECT COALESCE(NULLIF(custom_label,''),label),status,coverage_note,last_attempt,feed_paused FROM sources s
+        return Query(@"SELECT COALESCE(NULLIF(custom_label,''),label),status,coverage_note,last_attempt,feed_paused,coverage_pending FROM sources s
             WHERE (?1='' OR name=?1) AND (CAST(?2 AS INTEGER)=0 OR EXISTS
                 (SELECT 1 FROM feed_group_members m WHERE m.group_id=CAST(?2 AS INTEGER) AND m.source=s.name))
             ORDER BY name", source, group.ToString(CultureInfo.InvariantCulture));
@@ -805,8 +814,8 @@ internal sealed class Store : IDisposable
 
     public List<string[]> FeedCheckHealth()
     {
-        // Sidebar refreshes need only the saved check result and coverage note for each feed.
-        return Query("SELECT name,status,coverage_note FROM sources");
+        // Sidebar refreshes need the current warning state, not the historical note.
+        return Query("SELECT name,status,coverage_pending FROM sources");
     }
 
     public Dictionary<string, long> UnreadCounts(ArticleFilter dates = null)
