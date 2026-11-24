@@ -26,7 +26,8 @@ internal sealed class RssCollector : IDisposable
         // Buffered HTTP reads apply both limits before the XML parser sees the response.
         client.Timeout = TimeSpan.FromSeconds(25);
         client.MaxResponseContentBufferSize = MaxBytes;
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("feedbox/1.0");
+        // Use the standard Windows Chrome user-agent for direct feed requests.
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36");
     }
 
     public static bool TryFeedUrl(string value, out Uri url)
