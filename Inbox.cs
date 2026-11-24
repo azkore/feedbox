@@ -615,18 +615,25 @@ internal sealed class Inbox : IDisposable
                 .Append("' data-published='").Append(E(post[4])).Append("' data-day='").Append(E(day))
                 .Append("' data-read='").Append(post[5] == null ? "0" : "1").Append("' data-marked='").Append(post[12]).Append('\'');
             if (IsRssKey(post[1]) && post[8] == "") html.Append(" data-publisher-preview");
-            html.Append("><div class=article-inner><h3>");
+            html.Append("><div class=article-inner>");
+            // Both state controls live in the margin. Marked articles stay unread until unmarked or opened.
+            var marked = post[12] == "1";
+            var read = post[5] != null;
+            var readTitle = marked ? "Marked articles stay unread" : read ? "Mark unread" : "Mark read";
+            html.Append("<div class=article-state>").Append(Form("read", "<input type=hidden name=id value='" + E(post[0]) + "'>"
+                + "<button type=submit class=article-read name=mark value=" + (read ? "unread" : "read")
+                + " aria-label='Read' aria-pressed=" + (read ? "true" : "false") + " title='" + readTitle + "'"
+                + (marked ? " disabled" : "") + "><span aria-hidden=true>&#x2713;</span></button>", unread, source, oldest, group, dates));
+            html.Append("<button type=button class=article-bookmark aria-label='Marked' aria-pressed=")
+                .Append(marked ? "true title='Unmark article'" : "false title='Mark article'")
+                .Append("><span aria-hidden=true>&#x1F516;&#xFE0E;</span></button></div><h3>");
             Uri original;
             if (TryWebUrl(post[3], out original))
                 html.Append("<a class=original target=_blank rel=noopener href='").Append(E(original.AbsoluteUri)).Append("'>").Append(E(post[2])).Append("</a>");
             else html.Append("<strong>").Append(E(post[2])).Append("</strong>");
             html.Append("</h3><small>").Append(E(byName.ContainsKey(post[1]) ? byName[post[1]][3] : post[1]));
             if (post[6] != "") html.Append(IsRssKey(post[1]) ? " &middot; " : " &middot; u/").Append(E(post[6]));
-            html.Append(" &middot; ").Append(E(date)).Append("</small><div class=article-actions>");
-            html.Append(Form("read", "<input type=hidden name=id value='" + E(post[0]) + "'>"
-                 + (post[5] == null ? "<button name=mark value=read>Mark read</button>" : "<button name=mark value=unread>Mark unread</button>"), unread, source, oldest, group, dates));
-            html.Append("<span class=marked-label").Append(post[12] == "1" ? "" : " hidden").Append(">Marked</span>");
-            html.Append("</div>");
+            html.Append(" &middot; ").Append(E(date)).Append("</small>");
 
             // Publisher HTML lives in a separate document, without access to the inbox's styles or app controls.
             if (IsRssKey(post[1]) && post[9] == "1")

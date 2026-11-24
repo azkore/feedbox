@@ -997,6 +997,12 @@
     // Clicking a different article selects it; leave focus on any link or button the reader clicked.
     main.addEventListener('click', event => {
         const row = event.target.closest('article[data-post]');
+        if (row && event.target.closest('.article-bookmark')) {
+            if (busy || navigation) return;
+            if (row !== selected) select(row, false);
+            toggleArticleMark(row);
+            return;
+        }
         if (row && row !== selected) select(row, false);
     });
     main.addEventListener('error', event => {
@@ -1077,10 +1083,15 @@
         }
         row.dataset.read = read ? '1' : '0';
         row.dataset.marked = marked ? '1' : '0';
-        row.querySelector('.marked-label').hidden = !marked;
-        const button = row.querySelector('form[action="/read"] button');
+        const bookmark = row.querySelector('.article-bookmark');
+        bookmark.setAttribute('aria-pressed', String(marked));
+        bookmark.title = marked ? 'Unmark article' : 'Mark article';
+        // The checkmark displays the read state and remains inactive for protected articles.
+        const button = row.querySelector('.article-read');
         button.value = read ? 'unread' : 'read';
-        button.textContent = read ? 'Mark unread' : 'Mark read';
+        button.setAttribute('aria-pressed', String(read));
+        button.title = marked ? 'Marked articles stay unread' : read ? 'Mark unread' : 'Mark read';
+        button.disabled = marked;
         if (!delta) return;
         for (const feed of document.querySelectorAll('.feed[data-feed]')) {
             if (feed.dataset.feed && feed.dataset.feed !== row.dataset.source) continue;
@@ -1102,6 +1113,18 @@
         if (!response.ok) throw new Error(await response.text() || 'Could not update the mark.');
         const state = await response.json();
         updateArticleState(row, Boolean(state.read), Boolean(state.marked));
+    }
+
+    async function toggleArticleMark(row) {
+        // The bookmark and Numpad + share the same write and advance rules.
+        status.textContent = '';
+        busy = true;
+        try {
+            await changeMark(row, 'toggle');
+            // Keep the target when both states are visible so the next toggle reverses it.
+            if (row.isConnected && !navigation && !inView(row.dataset.read === '1', row.dataset.marked === '1')) await advanceAfterMark(row);
+        } catch (error) { showError(error); }
+        finally { busy = false; }
     }
 
     async function advanceAfterMark(row) {
@@ -1224,27 +1247,22 @@
         if (!current) select(articles.find(onScreen) || articles[0]);
         else if (current !== selected) select(current, false);
         if (!selected) return;
-        if (mark || key === 'v') {
+        if (mark) { await toggleArticleMark(selected); return; }
+        if (key === 'v') {
             const row = selected;
             busy = true;
             try {
-                if (mark) {
-                    await changeMark(row, 'toggle');
-                    // Keep the same target when both states are visible, so a second press reverses the first.
-                    if (row.isConnected && !navigation && !inView(row.dataset.read === '1', row.dataset.marked === '1')) await advanceAfterMark(row);
-                } else {
-                    const target = row.dataset.discussion || row.querySelector('a.original')?.href;
-                    if (!target) return;
-                    // Keep a handle just long enough to tell whether the browser allowed the tab to open.
-                    const tab = window.open('about:blank', '_blank');
-                    if (!tab) { status.textContent = 'Allow pop-ups to open this article.'; return; }
-                    tab.opener = null;
-                    tab.location.replace(target);
-                    await changeMark(row, 'opened');
-                    // Like J, keep the opened card in the current list until the view is replaced.
-                    if (row.isConnected && !navigation && !inView(row.dataset.read === '1', row.dataset.marked === '1'))
-                        await advanceAfterMark(row);
-                }
+                const target = row.dataset.discussion || row.querySelector('a.original')?.href;
+                if (!target) return;
+                // Keep a handle just long enough to tell whether the browser allowed the tab to open.
+                const tab = window.open('about:blank', '_blank');
+                if (!tab) { status.textContent = 'Allow pop-ups to open this article.'; return; }
+                tab.opener = null;
+                tab.location.replace(target);
+                await changeMark(row, 'opened');
+                // Like J, keep the opened card in the current list until the view is replaced.
+                if (row.isConnected && !navigation && !inView(row.dataset.read === '1', row.dataset.marked === '1'))
+                    await advanceAfterMark(row);
             } catch (error) { showError(error); }
             finally { busy = false; }
             return;

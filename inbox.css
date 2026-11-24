@@ -135,7 +135,6 @@ h1 { margin: 0; font-size: 15px; }
 .toolbar a:hover { text-decoration: underline; }
 .toolbar .sort { border-bottom: 1px dotted var(--muted); }
 .archive-search input { width: 108px; padding: 3px 5px; }
-.marked-label { color: var(--accent); font-size: 12px; }
 .state-filter { position: relative; }
 .state-filter form { position: absolute; z-index: 3; top: 100%; left: 0; min-width: max-content; margin-top: 7px; padding: 12px; background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; }
 .state-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 8px; }
@@ -164,15 +163,21 @@ article { margin: 0 0 14px; padding: 33px calc(var(--reader-inset) - 1px) 36px; 
 article[data-marked='1'] { border-color: var(--marked-border); box-shadow: inset 0 0 0 1px var(--marked-border); }
 /* Moving with J or K does not change the border. Links and buttons retain their focus rings. */
 article[data-current]:focus { outline: none; }
-.article-inner { min-width: 0; overflow-wrap: anywhere; }
-.article-inner h3 { margin: 0 0 8px; font-size: 26px; font-weight: 650; line-height: 32px; letter-spacing: -.025em; }
+.article-inner { --action-room: calc(var(--reader-inset) - 1px); --action-width: min(52px, calc(2 * var(--reader-inset))); position: relative; min-width: 0; overflow-wrap: anywhere; }
+/* Center the pair on the right inset, even when the inset is narrower than both icons. */
+.article-state { position: absolute; z-index: 1; inset-block-start: 0; inset-inline-end: calc((var(--action-room) + var(--action-width)) / -2); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: var(--action-width); }
+.article-state form { margin: 0; }
+.article-state button { display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; min-height: 28px; padding: 0; border: 0; background: transparent; color: var(--muted); font: min(22px, var(--reader-inset))/1.2 'Segoe UI Symbol', sans-serif; font-variant-emoji: text; }
+.article-read { width: 100%; }
+.article-read[aria-pressed=true] { color: var(--count-read); }
+.article-bookmark[aria-pressed=true] { color: var(--marked-border); }
+.article-state button:not(:disabled):hover { background: var(--active); }
+/* Keep the headline clear of the controls at narrow inset settings. */
+.article-inner h3 { margin: 0 0 8px; padding-inline-end: max(0px, calc((var(--action-width) - var(--action-room)) / 2 + 2px)); font-size: 26px; font-weight: 650; line-height: 32px; letter-spacing: -.025em; }
 .article-inner h3 a { color: var(--ink); text-decoration: none; }
 .article-inner h3 a:hover { text-decoration: underline; }
 article[data-read='1'] h3 a { color: var(--muted); }
 .article-inner small { color: var(--muted); font-size: 13px; }
-/* Keep the read form available to J, but only show an article control for marking unread. */
-.article-actions { display: flex; justify-content: flex-end; margin: 4px 0; }
-article[data-read='0'] .article-actions { display: none; }
 .context { font: 400 16px/27px Merriweather, Georgia, serif; color: var(--body-ink); white-space: pre-line; }
 .context p { margin: 0 0 24px; }
 .context p:last-child { margin-bottom: 0; }
