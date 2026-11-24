@@ -23,7 +23,7 @@ internal sealed class App : Form
     private CoreWebView2Environment environment;
     private bool running, ready, needsSignIn, exiting;
     private Task<string> rssCheck;
-    private string rssFeed;
+    private Source rssFeed;
     private bool checkingAllRss, checkingAllReddit;
     private volatile FeedCheckStatus allCheckStatus = new FeedCheckStatus(false, "");
 
@@ -281,13 +281,15 @@ internal sealed class App : Form
             // A just-added feed can be picked up by the timer before its manual check starts.
             // Share that result instead of showing an empty inbox or fetching the same feed twice.
             if (name == null) return "";
-            bool sameFeed = name == rssFeed;
+            var requested = name == rssFeed.Name ? store.RssToCheck(name) : null;
+            // A manual check after an edit must use the new URL rather than reuse an older result.
+            bool sameFeed = requested != null && requested.FeedUrl == rssFeed.FeedUrl;
             var result = await rssCheck;
             return sameFeed ? result : await CheckRss(name);
         }
         var source = store.RssToCheck(name);
         if (source == null) return "";
-        rssFeed = source.Name;
+        rssFeed = source;
         return await (rssCheck = RunRssCheck(source));
     }
 
@@ -297,7 +299,7 @@ internal sealed class App : Form
         catch (Exception)
         {
             const string problem = "Could not complete the RSS check.";
-            if (!exiting) store.Note(source.Name, problem);
+            if (!exiting) store.NoteRss(source, problem);
             return problem;
         }
     }

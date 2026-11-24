@@ -363,7 +363,8 @@
         menuButton = button;
         button.setAttribute('aria-expanded', 'true');
         const menu = main.querySelector('.feed-menu');
-        menu.querySelector('[data-edit=shortcut]').hidden = !button.closest('.feed-row').querySelector('.feed.rss-feed');
+        const isRss = Boolean(button.closest('.feed-row').querySelector('.feed.rss-feed'));
+        for (const action of ['shortcut', 'source']) menu.querySelector(`[data-edit=${action}]`).hidden = !isRss;
         const anchor = button.getBoundingClientRect();
         // Place the shared menu outside the scrolling sidebar so the last row's menu cannot be clipped.
         menu.hidden = false;
@@ -446,6 +447,35 @@
     window.addEventListener('resize', closeCountTip);
     window.addEventListener('blur', closeCountTip);
 
+    let sourceRequest;
+    async function loadFeedSource(dialog, form) {
+        sourceRequest?.abort();
+        const request = sourceRequest = new AbortController();
+        const error = dialog.querySelector('.feed-editor-error');
+        const input = form.elements.url;
+        const save = form.querySelector('button[type=submit]');
+        input.value = '';
+        input.disabled = save.disabled = true;
+        form.elements.version.value = '';
+        error.textContent = 'Loading feed URL…';
+        // Ignore a late response if the dialog was closed, replaced, or opened for a different feed.
+        const isCurrent = () => sourceRequest === request && dialog.isConnected && dialog.open && !form.hidden;
+        try {
+            const url = '/feed-source?feed=' + encodeURIComponent(form.elements['edited-feed'].value);
+            const response = await fetch(url, { signal: request.signal });
+            if (!response.ok) throw new Error(await response.text());
+            const source = await response.json();
+            if (!isCurrent()) return;
+            input.value = source.url;
+            form.elements.version.value = source.version;
+            input.disabled = save.disabled = false;
+            error.textContent = '';
+            input.select();
+        } catch (failure) {
+            if (isCurrent()) error.textContent = failure.message || 'Could not load the feed URL.';
+        }
+    }
+
     main.addEventListener('click', event => {
         if (event.target.closest('.cancel-feed-edit')) { main.querySelector('.feed-editor').close(); return; }
         const action = event.target.closest('.feed-menu button')?.dataset.edit;
@@ -454,11 +484,12 @@
         const name = link.querySelector('.feed-label').textContent;
         const dialog = main.querySelector('.feed-editor');
         const rename = dialog.querySelector('form[action="/rename-feed"]');
+        const source = dialog.querySelector('form[action="/edit-source"]');
         const reorganize = dialog.querySelector('form[action="/reorganize-feed"]');
         const shortcut = dialog.querySelector('form[action="/feed-shortcut"]');
         const remove = dialog.querySelector('form[action="/delete-feed"]');
-        const editors = { rename, reorganize, shortcut, delete: remove };
-        const titles = { rename: 'Rename feed', reorganize: `Reorganize ${name}`, shortcut: `V shortcut for ${name}`, delete: `Delete ${name}?` };
+        const editors = { rename, source, reorganize, shortcut, delete: remove };
+        const titles = { rename: 'Rename feed', source: `Edit source for ${name}`, reorganize: `Reorganize ${name}`, shortcut: `V shortcut for ${name}`, delete: `Delete ${name}?` };
         dialog.querySelector('h2').textContent = titles[action];
         dialog.querySelector('.feed-editor-error').textContent = '';
         const form = editors[action];
@@ -475,6 +506,7 @@
         closeFeedMenu();
         dialog.showModal();
         if (action === 'rename') rename.elements.label.select();
+        if (action === 'source') loadFeedSource(dialog, source);
         if (action === 'delete') remove.querySelector('.cancel-feed-edit').focus();
     });
 
@@ -573,7 +605,7 @@
             return;
         }
         const action = form.getAttribute('action');
-        if (!['/check-feed', '/check', '/check-all', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed', '/feed-shortcut', '/delete-feed', '/import-opml'].includes(action)) return;
+        if (!['/check-feed', '/check', '/check-all', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/edit-source', '/reorganize-feed', '/feed-shortcut', '/delete-feed', '/import-opml'].includes(action)) return;
         event.preventDefault();
         if (busy || navigation) return;
         if (action === '/check-all') { await checkAll(form); return; }

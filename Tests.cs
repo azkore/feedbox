@@ -155,6 +155,7 @@ internal static class Tests
             TestDeleteFeed();
             TestCheckAllTypes();
             TestRss();
+            TestEditRssSource();
             TestPublisherPreview();
             TestAppConfig();
             TestReadingTools();
@@ -166,6 +167,54 @@ internal static class Tests
         {
             foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix);
         }
+    }
+
+    private static void TestEditRssSource()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            using (var store = new Store(path))
+            using (var server = new Inbox(store, 55000 + new Random().Next(5000), name => System.Threading.Tasks.Task.FromResult("")))
+            {
+                var group = store.AddGroup("Fixture group");
+                var old = new Uri("https://example.com/old.xml");
+                var next = new Uri("https://example.com/new.xml");
+                var conflicting = new Uri("https://example.com/existing.xml");
+                var feed = store.AddRss(old, group);
+                store.AddRss(conflicting, 0);
+                store.RenameFeed(feed, "My feed");
+                var originalArticle = Post("editold", "Already read");
+                store.SaveRss(feed, "Publisher label", new[] { originalArticle });
+                store.SetRead(originalArticle.id, true);
+                var inFlight = store.RssToCheck(feed);
+
+                // Exercise the same endpoints as the editor, including the optimistic version check.
+                string html;
+                var origin = server.Url.TrimEnd('/');
+                Request(server.Url, "GET", null, null, out html);
+                var token = Regex.Match(html, "name=token value='([0-9a-f]+)'").Groups[1].Value;
+                var form = "token=" + token + "&edited-feed=" + feed + "&version=" + Store.RssKey(old.AbsoluteUri) + "&url=";
+                var endpoint = server.Url + "edit-source";
+                Expect(Request(server.Url + "feed-source?feed=" + feed, "GET", null, null, out html) == 200 && html.Contains(old.AbsoluteUri),
+                    "the source editor can load the current subscription URL");
+                Expect(Request(endpoint, "POST", origin, form + Uri.EscapeDataString(conflicting.AbsoluteUri), out html) == 409
+                    && store.RssToCheck(feed).FeedUrl == old.AbsoluteUri, "editing cannot collide with an existing subscription");
+                Expect(Request(endpoint, "POST", origin, form + Uri.EscapeDataString(next.AbsoluteUri), out html) == 303
+                    && store.RssToCheck(feed).FeedUrl == next.AbsoluteUri && store.Groups().Single().Members.Contains(feed)
+                    && store.RssSubscriptions().Single(row => row[0] == feed)[1] == "My feed" && store.Count(false, feed) == 1 && store.Count(true, feed) == 0,
+                    "editing preserves the existing feed identity, articles, read state, label and memberships");
+                Expect(Request(endpoint, "POST", origin, form + Uri.EscapeDataString(old.AbsoluteUri), out html) == 409
+                    && store.RssToCheck(feed).FeedUrl == next.AbsoluteUri, "a stale editor cannot overwrite the new URL");
+
+                var late = Post("editlate", "Late response");
+                Expect(!store.NoteRss(inFlight, "Stale result") && store.SaveRss(feed, "Old title", new[] { late }, inFlight.FeedUrl) == -1
+                    && store.Count(false, feed) == 1, "checks from the old URL cannot write after the edit");
+                Expect(store.AddRss(next, 0) == feed && store.ImportRss(new[] { new OpmlFeed { Url = next, Label = "Imported", Group = "" } }, false).Item1 == 0
+                    && store.AddRss(old, 0) != feed, "adding or importing resolves current URLs even after a source edit");
+            }
+        }
+        finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix); }
     }
 
     private static void TestPublisherPreview()

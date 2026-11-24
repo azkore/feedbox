@@ -42,7 +42,8 @@ internal sealed class RssCollector : IDisposable
 
     public async Task<string> Check(Store store, Source source)
     {
-        store.RecordAttempt(source.Name);
+        const string changed = "The feed source changed during the check.";
+        if (!store.RecordRssAttempt(source)) return changed;
         string status;
         try
         {
@@ -55,7 +56,8 @@ internal sealed class RssCollector : IDisposable
                     {
                         string title;
                         var posts = Parse(data, response.RequestMessage.RequestUri, source.Name, out title);
-                        int added = store.SaveRss(source.Name, title, posts);
+                        int added = store.SaveRss(source.Name, title, posts, source.FeedUrl);
+                        if (added < 0) return changed;
                         status = added == 0 ? "No new posts found." : "Added " + added + (added == 1 ? " new post." : " new posts.");
                     }
                 }
@@ -66,8 +68,7 @@ internal sealed class RssCollector : IDisposable
         catch (InvalidDataException ex) { status = ex.Message; }
         catch (IOException) { status = "Could not read the RSS response."; }
         catch (XmlException) { status = "The response is not readable RSS or Atom XML."; }
-        store.Note(source.Name, status);
-        return status;
+        return store.NoteRss(source, status) ? status : changed;
     }
 
     internal static List<Post> Parse(Stream data, Uri origin, string source, out string title)

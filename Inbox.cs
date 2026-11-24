@@ -121,6 +121,16 @@ internal sealed class Inbox : IDisposable
                 ReplyBytes(context, 200, Encoding.UTF8.GetBytes(RssFrame(body)), "text/html; charset=utf-8", rssFrame: true);
                 return;
             }
+            if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/feed-source")
+            {
+                var key = SourceName(query["feed"]);
+                var rssSource = IsRssKey(key) ? store.RssToCheck(key) : null;
+                if (rssSource == null) { Reply(context, 404, "RSS or Atom feed not found."); return; }
+                // Load the URL on demand and use its version to detect edits made in another tab.
+                var json = new System.Web.Script.Serialization.JavaScriptSerializer();
+                Reply(context, 200, json.Serialize(new { url = rssSource.FeedUrl, version = Store.RssKey(rssSource.FeedUrl) }), "application/json; charset=utf-8");
+                return;
+            }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/subscriptions.opml")
             {
                 context.Response.Headers["Content-Disposition"] = "attachment; filename=feedbox.opml";
@@ -235,6 +245,16 @@ internal sealed class Inbox : IDisposable
                     var label = (form["label"] ?? "").Trim();
                     if (renamed == "" || label.Length > 120 || label.Any(char.IsControl) || !store.RenameFeed(renamed, label))
                     { Reply(context, 400, "Choose a feed and enter a name of up to 120 characters."); return; }
+                    break;
+                case "/edit-source":
+                    var editedSource = SourceName(form["edited-feed"]);
+                    Uri replacement;
+                    if (!IsRssKey(editedSource) || !RssCollector.TryFeedUrl((form["url"] ?? "").Trim(), out replacement))
+                    { Reply(context, 400, "Enter a valid HTTP or HTTPS feed URL."); return; }
+                    var edit = store.EditRssSource(editedSource, form["version"], replacement);
+                    if (edit == Store.RssSourceEdit.Missing) { Reply(context, 404, "RSS or Atom feed not found."); return; }
+                    if (edit == Store.RssSourceEdit.Stale) { Reply(context, 409, "The source URL changed. Reopen Edit source to try again."); return; }
+                    if (edit == Store.RssSourceEdit.Duplicate) { Reply(context, 409, "Another subscription already uses this URL."); return; }
                     break;
                 case "/reorganize-feed":
                     var reorganized = SourceName(form["edited-feed"]);
@@ -633,10 +653,12 @@ internal sealed class Inbox : IDisposable
                 .Append(E(folder.Name)).Append("</label>");
         choices.Append("</fieldset>");
         return "<div class=feed-menu hidden><button type=button data-edit=rename>Rename</button>"
+            + "<button type=button data-edit=source>Edit source</button>"
             + "<button type=button data-edit=reorganize>Reorganize feed</button><button type=button data-edit=shortcut>V shortcut</button>"
             + "<button type=button data-edit=delete>Delete feed&hellip;</button></div>"
             + "<dialog class=feed-editor aria-labelledby=feed-editor-title><h2 id=feed-editor-title></h2>"
             + Form("rename-feed", edited + "<label>Feed name <input name=label maxlength=120></label>" + actions, unread, source, oldest, group, dates)
+            + Form("edit-source", edited + "<input type=hidden name=version><label>RSS or Atom URL <input type=url name=url required maxlength=2000></label>" + actions, unread, source, oldest, group, dates)
             + Form("reorganize-feed", edited + choices + actions, unread, source, oldest, group, dates)
             + Form("feed-shortcut", edited + "<label>V opens <select name=open><option value=original>Original article</option>"
                 + "<option value=discussion>Discussion (if available)</option></select></label>" + actions, unread, source, oldest, group, dates)

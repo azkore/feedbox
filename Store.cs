@@ -249,16 +249,67 @@ internal sealed class Store : IDisposable
 
     public string AddRss(Uri url, int group)
     {
-        // Keep the subscription key unchanged if the publisher later changes its title.
-        var name = RssKey(url.AbsoluteUri);
+        string name = null;
         Transaction(() =>
         {
+            name = RssSubscriptionKey(url);
             Run("INSERT OR IGNORE INTO sources(name, label, kind, feed_url) VALUES (?,?,'rss',?)", name, url.Host, url.AbsoluteUri);
             if (group > 0) Run(@"INSERT OR IGNORE INTO feed_group_members(group_id,source,position)
                 SELECT id,?,COALESCE((SELECT MAX(position)+1 FROM feed_group_members WHERE group_id=feed_groups.id),0)
                 FROM feed_groups WHERE id=?", name, group.ToString(CultureInfo.InvariantCulture));
         });
         return name;
+    }
+
+    private string RssSubscriptionKey(Uri url)
+    {
+        // Resolve the current URL inside the caller's transaction; older keys may reflect a previous URL.
+        var existing = Query("SELECT name FROM sources WHERE kind='rss' AND feed_url=? LIMIT 1", url.AbsoluteUri).SingleOrDefault();
+        if (existing != null) return existing[0];
+        var key = RssKey(url.AbsoluteUri);
+        // The original URL can be subscribed to again after the existing subscription moves.
+        for (int i = 1; HasSource(key); i++) key = RssKey(url.AbsoluteUri + "\n" + i.ToString(CultureInfo.InvariantCulture));
+        return key;
+    }
+
+    public enum RssSourceEdit { Saved, Missing, Stale, Duplicate }
+
+    public RssSourceEdit EditRssSource(string source, string version, Uri url)
+    {
+        var result = RssSourceEdit.Missing;
+        Transaction(() =>
+        {
+            var current = RssToCheck(source);
+            if (current == null) return;
+            if (current.FeedUrl == url.AbsoluteUri) { result = RssSourceEdit.Saved; return; }
+            if (RssKey(current.FeedUrl) != version) { result = RssSourceEdit.Stale; return; }
+            if (Query("SELECT 1 FROM sources WHERE kind='rss' AND feed_url=? LIMIT 1", url.AbsoluteUri).Count != 0)
+            { result = RssSourceEdit.Duplicate; return; }
+
+            // Preserve the subscription key and its article identities; make the new URL due for collection.
+            Run("UPDATE sources SET feed_url=?,last_attempt='',status='Source URL changed. Waiting for the next check.' WHERE name=?", url.AbsoluteUri, source);
+            result = RssSourceEdit.Saved;
+        });
+        return result;
+    }
+
+    public bool RecordRssAttempt(Source source)
+    {
+        lock (gate)
+        {
+            Run("UPDATE sources SET last_attempt=? WHERE name=? AND kind='rss' AND feed_url=?",
+                Stamp(DateTimeOffset.UtcNow), source.Name, source.FeedUrl);
+            return Query("SELECT changes()")[0][0] == "1";
+        }
+    }
+
+    public bool NoteRss(Source source, string status)
+    {
+        lock (gate)
+        {
+            Run("UPDATE sources SET status=? WHERE name=? AND kind='rss' AND feed_url=?", status, source.Name, source.FeedUrl);
+            return Query("SELECT changes()")[0][0] == "1";
+        }
     }
 
     public Source RssToCheck(string name = null)
@@ -271,13 +322,15 @@ internal sealed class Store : IDisposable
         return rows.Count == 0 ? null : new Source { Name = rows[0][0], Label = rows[0][1], FeedUrl = rows[0][2] };
     }
 
-    public int SaveRss(string source, string title, IEnumerable<Post> posts)
+    public int SaveRss(string source, string title, IEnumerable<Post> posts, string expectedUrl = null)
     {
         int added = 0;
         Transaction(() =>
         {
-            var policy = Query("SELECT rss_since,rss_baseline_pending FROM sources WHERE name=? AND kind='rss'", source).SingleOrDefault();
-            if (policy == null) return; // The feed may have been deleted while the download was in flight.
+            var policy = Query("SELECT rss_since,rss_baseline_pending,feed_url FROM sources WHERE name=? AND kind='rss'", source).SingleOrDefault();
+            // Discard a response from the previous URL if the subscription changed during the download.
+            if (expectedUrl != null && (policy == null || policy[2] != expectedUrl)) { added = -1; return; }
+            if (policy == null) return;
             if (policy[0] != "")
             {
                 var cutoff = DateTimeOffset.Parse(policy[0], CultureInfo.InvariantCulture);
@@ -353,7 +406,7 @@ internal sealed class Store : IDisposable
             var visited = new HashSet<string>();
             foreach (var entry in feeds)
             {
-                var name = RssKey(entry.Url.AbsoluteUri);
+                var name = RssSubscriptionKey(entry.Url);
                 if (visited.Add(name))
                 {
                     // Import labels and the first-fetch choice only for new subscriptions.
