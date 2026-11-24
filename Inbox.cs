@@ -220,6 +220,13 @@ internal sealed class Inbox : IDisposable
                     if ((mode != "original" && mode != "discussion") || !store.SetOpenDiscussion(SourceName(form["edited-feed"]), mode == "discussion"))
                     { Reply(context, 400, "Choose a shortcut for an RSS or Atom feed."); return; }
                     break;
+                case "/delete-feed":
+                    var deletedFeed = SourceName(form["edited-feed"]);
+                    if (deletedFeed == "" || !store.DeleteFeed(deletedFeed))
+                    { Reply(context, 404, "The feed is no longer in the inbox."); return; }
+                    // If the deleted feed was open, show its group or All feeds instead.
+                    if (SourceName(form["feed"]) == deletedFeed) form["feed"] = "";
+                    break;
                 case "/collection":
                     if (form["action"] != "pause" && form["action"] != "resume") { Reply(context, 400, "Choose pause or resume."); return; }
                     store.SetPaused(form["action"] == "pause");
@@ -575,12 +582,15 @@ internal sealed class Inbox : IDisposable
                 .Append(E(folder.Name)).Append("</label>");
         choices.Append("</fieldset>");
         return "<div class=feed-menu hidden><button type=button data-edit=rename>Rename</button>"
-            + "<button type=button data-edit=reorganize>Reorganize feed</button><button type=button data-edit=shortcut>V shortcut</button></div>"
+            + "<button type=button data-edit=reorganize>Reorganize feed</button><button type=button data-edit=shortcut>V shortcut</button>"
+            + "<button type=button data-edit=delete>Delete feed&hellip;</button></div>"
             + "<dialog class=feed-editor aria-labelledby=feed-editor-title><h2 id=feed-editor-title></h2>"
             + Form("rename-feed", edited + "<label>Feed name <input name=label maxlength=120></label>" + actions, unread, source, oldest, group, dates)
             + Form("reorganize-feed", edited + choices + actions, unread, source, oldest, group, dates)
             + Form("feed-shortcut", edited + "<label>V opens <select name=open><option value=original>Original article</option>"
                 + "<option value=discussion>Discussion (if available)</option></select></label>" + actions, unread, source, oldest, group, dates)
+            + Form("delete-feed", edited + "<p>This removes the subscription from every group and deletes all its saved articles from feedbox.</p>"
+                + "<div class=dialog-actions><button type=button class=cancel-feed-edit>Cancel</button><button type=submit>Delete feed</button></div>", unread, source, oldest, group, dates)
             + "<p class=feed-editor-error role=status></p></dialog>";
     }
 

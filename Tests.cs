@@ -152,6 +152,7 @@ internal static class Tests
             TestArchiveBridge();
             TestRedditCollectionStart();
             TestMarkFeedRead();
+            TestDeleteFeed();
             TestRss();
             TestAppConfig();
             TestReadingTools();
@@ -351,6 +352,46 @@ internal static class Tests
                 && custom.Port == 52603, "the text config accepts absolute and executable-relative paths with spaces");
         }
         finally { Directory.Delete(folder, true); }
+    }
+
+    private static void TestDeleteFeed()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            using (var store = new Store(path))
+            using (var server = new Inbox(store, 55000 + new Random().Next(5000), name => System.Threading.Tasks.Task.FromResult("")))
+            {
+                var group = store.AddGroup("Fixture group");
+                var otherGroup = store.AddGroup("Other group");
+                store.AddSource("remove", group);
+                store.AddSource("remove", otherGroup);
+                store.AddSource("keep", group);
+                var remove = store.Sources().Single(s => s.Name == "remove");
+                var target = Post("deletefeed1", "The post to delete");
+                var keep = Post("deletefeed2", "The post to preserve");
+                store.SavePage(remove, new[] { target }, true);
+                store.ImportHistoricalPosts("keep", new[] { keep });
+                store.SetRead(keep.id, true);
+
+                // Exercise the real POST route and check that the rest of the archive survives.
+                string html;
+                Request(server.Url + "?feed=remove&group=" + group, "GET", null, null, out html);
+                var token = Regex.Match(html, "name=token value='([0-9a-f]+)'").Groups[1].Value;
+                var form = "token=" + token + "&edited-feed=remove&feed=remove&group=" + group;
+                Expect(Request(server.Url + "delete-feed", "POST", server.Url.TrimEnd('/'), form, out html) == 303
+                    && store.Sources().Single().Name == "keep"
+                    && store.Groups().Count == 2 && store.Groups().All(g => !g.Members.Contains("remove"))
+                    && store.Items(false).Single()[0] == keep.id && store.Count(true) == 0,
+                    "deleting a feed removes its posts and memberships while preserving other feeds and their read state");
+
+                var rss = store.AddRss(new Uri("https://example.com/feed.xml"), group);
+                store.DeleteFeed(rss);
+                Expect(store.SavePage(remove, new[] { target }, true) == 0 && store.SaveRss(rss, "Late reply", new[] { target }) == 0
+                    && store.Count(false) == 1, "a collection response cannot restore articles after its feed was deleted");
+            }
+        }
+        finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix); }
     }
 
     private static void TestRss()

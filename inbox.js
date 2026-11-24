@@ -394,16 +394,17 @@
         const rename = dialog.querySelector('form[action="/rename-feed"]');
         const reorganize = dialog.querySelector('form[action="/reorganize-feed"]');
         const shortcut = dialog.querySelector('form[action="/feed-shortcut"]');
-        dialog.querySelector('h2').textContent = action === 'rename' ? 'Rename feed' : action === 'shortcut' ? `V shortcut for ${name}` : `Reorganize ${name}`;
+        const remove = dialog.querySelector('form[action="/delete-feed"]');
+        const editors = { rename, reorganize, shortcut, delete: remove };
+        const titles = { rename: 'Rename feed', reorganize: `Reorganize ${name}`, shortcut: `V shortcut for ${name}`, delete: `Delete ${name}?` };
+        dialog.querySelector('h2').textContent = titles[action];
         dialog.querySelector('.feed-editor-error').textContent = '';
-        rename.hidden = action !== 'rename';
-        reorganize.hidden = action !== 'reorganize';
-        shortcut.hidden = action !== 'shortcut';
-        const form = action === 'rename' ? rename : action === 'shortcut' ? shortcut : reorganize;
+        const form = editors[action];
+        for (const editor of Object.values(editors)) editor.hidden = editor !== form;
         form.elements['edited-feed'].value = link.dataset.feed;
         if (action === 'rename') rename.elements.label.value = name;
         else if (action === 'shortcut') shortcut.elements.open.value = link.dataset.openDiscussion === '1' ? 'discussion' : 'original';
-        else {
+        else if (action === 'reorganize') {
             // Include hidden feed rows: unread filtering does not change membership.
             const groups = new Set([...nav.querySelectorAll('.group-members a.feed[data-feed]')].filter(a => a.dataset.feed === link.dataset.feed).map(a => a.dataset.group));
             for (const input of reorganize.querySelectorAll('[name=membership]')) input.checked = groups.has(input.value);
@@ -412,6 +413,7 @@
         closeFeedMenu();
         dialog.showModal();
         if (action === 'rename') rename.elements.label.select();
+        if (action === 'delete') remove.querySelector('.cancel-feed-edit').focus();
     });
 
     let draggedFeed = null;
@@ -509,7 +511,7 @@
             return;
         }
         const action = form.getAttribute('action');
-        if (!['/check-feed', '/check', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed', '/feed-shortcut', '/import-opml'].includes(action)) return;
+        if (!['/check-feed', '/check', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/reorganize-feed', '/feed-shortcut', '/delete-feed', '/import-opml'].includes(action)) return;
         event.preventDefault();
         if (busy || navigation) return;
         if (action === '/check-feed' || action === '/check') { await checkFeed(form); return; }

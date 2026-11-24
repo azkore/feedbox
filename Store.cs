@@ -276,7 +276,8 @@ internal sealed class Store : IDisposable
         int added = 0;
         Transaction(() =>
         {
-            var policy = Query("SELECT rss_since,rss_baseline_pending FROM sources WHERE name=? AND kind='rss'", source)[0];
+            var policy = Query("SELECT rss_since,rss_baseline_pending FROM sources WHERE name=? AND kind='rss'", source).SingleOrDefault();
+            if (policy == null) return; // The feed may have been deleted while the download was in flight.
             if (policy[0] != "")
             {
                 var cutoff = DateTimeOffset.Parse(policy[0], CultureInfo.InvariantCulture);
@@ -522,6 +523,21 @@ internal sealed class Store : IDisposable
         return saved;
     }
 
+    public bool DeleteFeed(string source)
+    {
+        bool deleted = false;
+        Transaction(() =>
+        {
+            if (!HasSource(source)) return;
+            // Remove a subscription from all groups and from the archive atomically.
+            Run("DELETE FROM posts WHERE source=?", source);
+            Run("DELETE FROM feed_group_members WHERE source=?", source);
+            Run("DELETE FROM sources WHERE name=?", source);
+            deleted = true;
+        });
+        return deleted;
+    }
+
     // Save a complete sidebar order without moving feeds between folders.
     public void SetGroupOrder(IList<int> orderedIds)
     {
@@ -582,6 +598,7 @@ internal sealed class Store : IDisposable
         int added = 0;
         Transaction(() =>
         {
+            if (!HasSource(scan.Name)) return; // Do not bring back articles from a deleted feed.
             added = SavePosts(scan.Name, posts);
             // Commit the page and the cursor together so a restart cannot skip unsaved posts.
             var remaining = scan.InitialRemaining.ToString(CultureInfo.InvariantCulture);

@@ -43,6 +43,7 @@ internal sealed class Collector
         int added = 0;
         for (int i = 0; i < PageBudget; i++)
         {
+            if (!store.HasSource(state.Name)) return new PageResult { Added = added };
             // A pause takes effect before the next request; the preceding page is already committed.
             if (!allowWhilePaused && store.IsPaused) return Finish(state, new PageResult(), added, "Check paused.");
             // Resume a partial walk at its committed continuation, or start at New.
@@ -63,6 +64,7 @@ internal sealed class Collector
             var walk = ProcessPage(state, result, first);
             bool complete = walk == WalkResult.Complete;
             added += store.SavePage(state, result.posts, complete);
+            if (!store.HasSource(state.Name)) { result.Added = added; return result; }
             if (complete) return Finish(state, result, added, state.Status, true);
             if (walk == WalkResult.GapAtCutoff)
             {

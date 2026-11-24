@@ -253,7 +253,8 @@ internal sealed class App : Form
                 }
                 if (source != sources.Last()) await Task.Delay(TimeSpan.FromSeconds(3));
             }
-            return store.Sources().First(s => s.Name == sources[0].Name).Status;
+            var checkedSource = store.Sources().FirstOrDefault(s => s.Name == sources[0].Name);
+            return checkedSource == null ? "The feed was deleted." : checkedSource.Status;
         }
         catch (Exception ex)
         {
