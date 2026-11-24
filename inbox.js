@@ -38,29 +38,43 @@
         catch { return null; }
     }
 
+    let menuCheck;
     async function checkFeed(checkForm) {
         const button = checkForm.querySelector('button');
         if (button.disabled) return;
         const body = new URLSearchParams(new FormData(checkForm));
         body.set('inline', '1');
-        const feed = body.get('feed');
-        const state = { pending: true, text: feed ? `Checking ${header.querySelector('h1').textContent}…` : 'Checking…', seconds: 0 };
-        checks.set(checkForm.getAttribute('action') + ':' + feed, state);
-        showCheck();
+        const fromMenu = body.has('target-feed');
+        const feed = body.get('target-feed') ?? body.get('feed');
+        const name = fromMenu ? checkForm.dataset.targetLabel : header.querySelector('h1').textContent;
+        const action = checkForm.getAttribute('action');
+        const key = action + ':' + feed;
+        if (checks.get(key)?.pending) return;
+        const state = { pending: true, text: feed ? `Checking ${name}…` : 'Checking…', seconds: 0 };
+        checks.set(key, state);
+        const feedback = status;
+        if (fromMenu) menuCheck = state;
+        // Report a sidebar refresh in the current view without replacing the batch status.
+        function report() {
+            showCheck();
+            if (fromMenu && menuCheck === state && status === feedback)
+                feedback.textContent = state.pending ? state.text + (state.seconds ? ` ${state.seconds}s` : '') : `${name}: ${state.text}`;
+        }
+        report();
         const started = Date.now();
         const timer = setInterval(() => {
             state.seconds = Math.floor((Date.now() - started) / 1000);
-            showCheck();
+            report();
         }, 1000);
         try {
-            const response = await fetch(checkForm.action, { method: 'POST', body });
+            const response = await fetch(action, { method: 'POST', body });
             state.text = await response.text() || 'No result received.';
         } catch {
             state.text = 'Lost contact with feedbox before receiving the result.';
         } finally {
             clearInterval(timer);
             state.pending = false;
-            showCheck();
+            report();
             refreshCheckStatus(header.querySelector('.check-status'));
             refreshUnreadCounts();
         }
@@ -397,8 +411,16 @@
         menuButton = button;
         button.setAttribute('aria-expanded', 'true');
         const menu = main.querySelector('.feed-menu');
-        const isRss = Boolean(button.closest('.feed-row').querySelector('.feed.rss-feed'));
-        for (const action of ['shortcut', 'source']) menu.querySelector(`[data-edit=${action}]`).hidden = !isRss;
+        const link = button.closest('.feed-row').querySelector('a.feed');
+        // Bind the menu to the clicked feed, independently of the open reading view.
+        for (const form of menu.querySelectorAll('form')) form.elements['target-feed'].value = link.dataset.feed;
+        const pause = menu.querySelector('form[action="/collection"] button');
+        const paused = link.classList.contains('feed-paused');
+        pause.value = paused ? 'resume' : 'pause';
+        pause.textContent = paused ? 'Resume' : 'Pause';
+        const refresh = menu.querySelector('form[action="/check-feed"]');
+        refresh.dataset.targetLabel = link.querySelector('.feed-label').textContent;
+        refresh.querySelector('button').disabled = Boolean(checks.get('/check-feed:' + link.dataset.feed)?.pending);
         const anchor = button.getBoundingClientRect();
         // Place the shared menu outside the scrolling sidebar so the last row's menu cannot be clipped.
         menu.hidden = false;
@@ -488,14 +510,16 @@
         const error = dialog.querySelector('.feed-editor-error');
         const input = form.elements.url;
         const save = form.querySelector('button[type=submit]');
+        const feed = form.elements['edited-feed'].value;
         input.value = '';
         input.disabled = save.disabled = true;
         form.elements.version.value = '';
         error.textContent = 'Loading feed URL…';
         // Ignore a late response if the dialog was closed, replaced, or opened for a different feed.
-        const isCurrent = () => sourceRequest === request && dialog.isConnected && dialog.open && !form.hidden;
+        const isCurrent = () => sourceRequest === request && dialog.isConnected && dialog.open && !form.hidden
+            && form.elements['edited-feed'].value === feed;
         try {
-            const url = '/feed-source?feed=' + encodeURIComponent(form.elements['edited-feed'].value);
+            const url = '/feed-source?feed=' + encodeURIComponent(feed);
             const response = await fetch(url, { signal: request.signal });
             if (!response.ok) throw new Error(await response.text());
             const source = await response.json();
@@ -504,7 +528,6 @@
             form.elements.version.value = source.version;
             input.disabled = save.disabled = false;
             error.textContent = '';
-            input.select();
         } catch (failure) {
             if (isCurrent()) error.textContent = failure.message || 'Could not load the feed URL.';
         }
@@ -517,31 +540,34 @@
         const link = menuButton.closest('.feed-row').querySelector('a.feed');
         const name = link.querySelector('.feed-label').textContent;
         const dialog = main.querySelector('.feed-editor');
-        const rename = dialog.querySelector('form[action="/rename-feed"]');
-        const source = dialog.querySelector('form[action="/edit-source"]');
-        const reorganize = dialog.querySelector('form[action="/reorganize-feed"]');
-        const shortcut = dialog.querySelector('form[action="/feed-shortcut"]');
+        const settings = dialog.querySelector('form[action="/feed-settings"]');
         const remove = dialog.querySelector('form[action="/delete-feed"]');
-        const editors = { rename, source, reorganize, shortcut, delete: remove };
-        const titles = { rename: 'Rename feed', source: `Edit source for ${name}`, reorganize: `Reorganize ${name}`, shortcut: `V shortcut for ${name}`, delete: `Delete ${name}?` };
-        dialog.querySelector('h2').textContent = titles[action];
+        const deleting = action === 'delete';
+        dialog.querySelector('h2').textContent = deleting ? `Delete ${name}?` : `Settings for ${name}`;
         dialog.querySelector('.feed-editor-error').textContent = '';
-        const form = editors[action];
-        for (const editor of Object.values(editors)) editor.hidden = editor !== form;
+        const form = deleting ? remove : settings;
+        settings.hidden = deleting;
+        remove.hidden = !deleting;
         form.elements['edited-feed'].value = link.dataset.feed;
-        if (action === 'rename') rename.elements.label.value = name;
-        else if (action === 'shortcut') shortcut.elements.open.value = link.dataset.openDiscussion === '1' ? 'discussion' : 'original';
-        else if (action === 'reorganize') {
+        const isRss = link.classList.contains('rss-feed');
+        if (!deleting) {
+            settings.elements.label.value = name;
+            settings.elements.open.value = link.dataset.openDiscussion === '1' ? 'discussion' : 'original';
+            const rss = settings.querySelector('.feed-rss-settings');
+            rss.hidden = rss.disabled = !isRss;
+            settings.querySelector('button[type=submit]').disabled = false;
             // Include hidden feed rows: unread filtering does not change membership.
             const groups = new Set([...nav.querySelectorAll('.group-members a.feed[data-feed]')].filter(a => a.dataset.feed === link.dataset.feed).map(a => a.dataset.group));
-            for (const input of reorganize.querySelectorAll('[name=membership]')) input.checked = groups.has(input.value);
+            for (const input of settings.querySelectorAll('[name=membership]')) input.checked = groups.has(input.value);
         }
         menuButton.focus({ preventScroll: true });
         closeFeedMenu();
         dialog.showModal();
-        if (action === 'rename') rename.elements.label.select();
-        if (action === 'source') loadFeedSource(dialog, source);
-        if (action === 'delete') remove.querySelector('.cancel-feed-edit').focus();
+        if (deleting) remove.querySelector('.cancel-feed-edit').focus();
+        else {
+            settings.elements.label.select();
+            if (isRss) loadFeedSource(dialog, settings);
+        }
     });
 
     let draggedFeed = null;
@@ -639,15 +665,21 @@
             return;
         }
         const action = form.getAttribute('action');
-        if (!['/check-feed', '/check', '/check-all', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/rename-feed', '/edit-source', '/reorganize-feed', '/feed-shortcut', '/delete-feed', '/import-opml'].includes(action)) return;
+        if (!['/check-feed', '/check', '/check-all', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/feed-settings', '/delete-feed', '/import-opml'].includes(action)) return;
         event.preventDefault();
         if (busy || navigation) return;
+        if (form.closest('.feed-menu')) {
+            menuButton?.focus({ preventScroll: true });
+            closeFeedMenu();
+        }
         if (action === '/check-all') { await checkAll(form); return; }
         if (action === '/check-feed' || action === '/check') { await checkFeed(form); return; }
 
         const button = event.submitter || form.querySelector('button');
         const fields = new URLSearchParams(new FormData(form));
         if (button?.name) fields.set(button.name, button.value);
+        // Match the toolbar's arrival cutoff so newly arriving articles remain unread.
+        if (action === '/mark-feed-read' && fields.has('target-feed')) fields.set('through', entries.dataset.arrival);
         if (action === '/delete-read') {
             const count = button.dataset.deleteCount;
             if (!window.confirm(`Delete ${count} read articles from all feeds and compact the database? This cannot be undone.`)) return;

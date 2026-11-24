@@ -70,6 +70,7 @@ aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain
 .feed-row:hover .feed-options, .feed-row:focus-within .feed-options, .feed-options[aria-expanded='true'] { visibility: visible; }
 .feed-row:hover .count, .feed-row:focus-within .count { visibility: hidden; }
 .feed-menu { position: fixed; z-index: 5; min-width: 140px; padding: 4px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); box-shadow: 0 4px 15px #0002; }
+.feed-menu form.inline { display: block; }
 .feed-menu button { display: block; width: 100%; padding: 5px 7px; text-align: left; border-color: transparent; }
 .feed-menu button[hidden] { display: none; }
 .feed-editor { width: min(360px, calc(100vw - 32px)); padding: 18px; background: var(--paper); color: var(--ink); border: 1px solid var(--rule); border-radius: 6px; }

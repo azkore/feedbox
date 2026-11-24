@@ -280,25 +280,38 @@ internal sealed class Store : IDisposable
         return key;
     }
 
-    public enum RssSourceEdit { Saved, Missing, Stale, Duplicate }
+    public enum RssSourceEdit { Saved, Missing, Stale, Duplicate, InvalidGroups }
 
     public RssSourceEdit EditRssSource(string source, string version, Uri url)
     {
         var result = RssSourceEdit.Missing;
         Transaction(() =>
         {
-            var current = RssToCheck(source);
-            if (current == null) return;
-            if (current.FeedUrl == url.AbsoluteUri) { result = RssSourceEdit.Saved; return; }
-            if (RssKey(current.FeedUrl) != version) { result = RssSourceEdit.Stale; return; }
-            if (Query("SELECT 1 FROM sources WHERE kind='rss' AND feed_url=? LIMIT 1", url.AbsoluteUri).Count != 0)
-            { result = RssSourceEdit.Duplicate; return; }
-
-            // Preserve the subscription key and its article identities; make the new URL due for collection.
-            Run("UPDATE sources SET feed_url=?,last_attempt='',status='Source URL changed. Waiting for the next check.' WHERE name=?", url.AbsoluteUri, source);
-            result = RssSourceEdit.Saved;
+            bool changed;
+            result = ValidateRssSource(source, version, url, out changed);
+            if (result == RssSourceEdit.Saved && changed) SetRssUrl(source, url);
         });
         return result;
+    }
+
+    private RssSourceEdit ValidateRssSource(string source, string version, Uri url, out bool changed)
+    {
+        // Validate against the URL the reader opened before changing any settings.
+        changed = false;
+        var current = RssToCheck(source);
+        if (current == null) return RssSourceEdit.Missing;
+        if (current.FeedUrl == url.AbsoluteUri) return RssSourceEdit.Saved;
+        if (RssKey(current.FeedUrl) != version) return RssSourceEdit.Stale;
+        if (Query("SELECT 1 FROM sources WHERE kind='rss' AND feed_url=? LIMIT 1", url.AbsoluteUri).Count != 0)
+            return RssSourceEdit.Duplicate;
+        changed = true;
+        return RssSourceEdit.Saved;
+    }
+
+    private void SetRssUrl(string source, Uri url)
+    {
+        // Keep the subscription key and article identities; make only the new source URL due.
+        Run("UPDATE sources SET feed_url=?,last_attempt='',status='Source URL changed. Waiting for the next check.' WHERE name=?", url.AbsoluteUri, source);
     }
 
     public bool RecordRssAttempt(Source source)
@@ -598,18 +611,56 @@ internal sealed class Store : IDisposable
         Transaction(() =>
         {
             var desired = new HashSet<string>(groups.Select(id => id.ToString(CultureInfo.InvariantCulture)));
-            var valid = new HashSet<string>(Query("SELECT id FROM feed_groups").Select(row => row[0]));
-            if (!HasSource(source) || !desired.IsSubsetOf(valid)) return;
-            // Change only the memberships the reader added or removed, in a single transaction.
-            var current = Query("SELECT group_id FROM feed_group_members WHERE source=?", source).Select(row => row[0]).ToList();
-            foreach (var id in current.Where(id => !desired.Contains(id)))
-                Run("DELETE FROM feed_group_members WHERE source=? AND group_id=?", source, id);
-            foreach (var id in desired.Except(current))
-                Run(@"INSERT INTO feed_group_members(group_id,source,position)
-                    VALUES (?,?,COALESCE((SELECT MAX(position)+1 FROM feed_group_members WHERE group_id=?),0))", id, source, id);
+            if (!HasSource(source) || !AreValidGroups(desired)) return;
+            ApplyFeedGroups(source, desired);
             saved = true;
         });
         return saved;
+    }
+
+    private bool AreValidGroups(HashSet<string> desired)
+    {
+        return desired.IsSubsetOf(Query("SELECT id FROM feed_groups").Select(row => row[0]));
+    }
+
+    private void ApplyFeedGroups(string source, HashSet<string> desired)
+    {
+        // Leave unchanged memberships in place so saving settings does not reorder feeds.
+        var current = Query("SELECT group_id FROM feed_group_members WHERE source=?", source).Select(row => row[0]).ToList();
+        foreach (var id in current.Where(id => !desired.Contains(id)))
+            Run("DELETE FROM feed_group_members WHERE source=? AND group_id=?", source, id);
+        foreach (var id in desired.Except(current))
+            Run(@"INSERT INTO feed_group_members(group_id,source,position)
+                VALUES (?,?,COALESCE((SELECT MAX(position)+1 FROM feed_group_members WHERE group_id=?),0))", id, source, id);
+    }
+
+    public RssSourceEdit SaveFeedSettings(string source, string label, IEnumerable<int> groups, Uri url, string version, bool discussion)
+    {
+        var result = RssSourceEdit.Missing;
+        Transaction(() =>
+        {
+            // A stale URL or invalid folder must not save half the dialog.
+            if (!HasSource(source)) return;
+            var desired = new HashSet<string>(groups.Select(id => id.ToString(CultureInfo.InvariantCulture)));
+            if (!AreValidGroups(desired)) { result = RssSourceEdit.InvalidGroups; return; }
+            bool changed = false;
+            if (url != null)
+            {
+                result = ValidateRssSource(source, version, url, out changed);
+                if (result != RssSourceEdit.Saved) return;
+            }
+
+            // Saving the current publisher title should not turn it into a custom title.
+            Run("UPDATE sources SET custom_label=CASE WHEN ?=COALESCE(NULLIF(custom_label,''),label) THEN custom_label ELSE ? END WHERE name=?", label, label, source);
+            ApplyFeedGroups(source, desired);
+            if (url != null)
+            {
+                Run("UPDATE sources SET open_discussion=? WHERE name=?", discussion ? "1" : "0", source);
+                if (changed) SetRssUrl(source, url);
+            }
+            result = RssSourceEdit.Saved;
+        });
+        return result;
     }
 
     public bool DeleteFeed(string source)

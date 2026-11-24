@@ -225,6 +225,19 @@ internal static class Tests
                     && store.Count(false, feed) == 1, "checks from the old URL cannot write after the edit");
                 Expect(store.AddRss(next, 0) == feed && store.ImportRss(new[] { new OpmlFeed { Url = next, Label = "Imported", Group = "" } }, false).Item1 == 0
                     && store.AddRss(old, 0) != feed, "adding or importing resolves current URLs even after a source edit");
+
+                // A rejected source change must not save the other settings; a valid save updates all four together.
+                var otherGroup = store.AddGroup("Second group");
+                var settings = "token=" + token + "&edited-feed=" + feed + "&label=Renamed&open=discussion&membership=" + otherGroup + "&version=";
+                var settingsRoute = server.Url + "feed-settings";
+                var newUrl = "https://example.com/final.xml";
+                Expect(Request(settingsRoute, "POST", origin, settings + Store.RssKey(old.AbsoluteUri) + "&url=" + Uri.EscapeDataString(newUrl), out html) == 409
+                    && store.Sidebar().Single(row => row[0] == feed)[3] == "My feed" && store.Groups().Single(g => g.Id == group).Members.Contains(feed),
+                    "a stale URL leaves the name and memberships intact");
+                Expect(Request(settingsRoute, "POST", origin, settings + Store.RssKey(next.AbsoluteUri) + "&url=" + Uri.EscapeDataString(newUrl), out html) == 303
+                    && store.RssToCheck(feed).FeedUrl == newUrl && store.Sidebar().Single(row => row[0] == feed).Skip(3).SequenceEqual(new[] { "Renamed", "", "1" })
+                    && store.Groups().Single(g => g.Members.Contains(feed)).Id == otherGroup && store.Count(true, feed) == 0,
+                    "saving feed settings updates the URL, name, group and open action without changing read state");
             }
         }
         finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix); }
@@ -673,8 +686,9 @@ internal static class Tests
                 store.ImportHistoricalPosts("rss", Enumerable.Range(0, 105).Select(i => Post("bulk" + i, "Bulk read fixture")));
                 store.ImportHistoricalPosts("otherfeed", new[] { Post("other1", "Leave unread") });
                 string html;
-                Expect(Request(server.Url, "GET", null, null, out html) == 200 && !html.Contains("action='/mark-feed-read'"),
-                    "All feeds has no bulk-read control");
+                Expect(Request(server.Url, "GET", null, null, out html) == 200
+                    && !html.Substring(0, html.IndexOf("</header>", StringComparison.Ordinal)).Contains("action='/mark-feed-read'"),
+                    "All feeds has no bulk-read control in its toolbar");
                 var token = Regex.Match(html, "name=token value='([0-9a-f]+)'").Groups[1].Value;
                 var origin = server.Url.TrimEnd('/');
                 var route = server.Url + "mark-feed-read";
@@ -705,9 +719,9 @@ internal static class Tests
                     && html.Contains("\"rss\":2") && html.Contains("\"total\":2"), "periodic unread counts use the same publication dates");
                 Expect(Request(route, "POST", origin, "token=" + token + "&feed=rss&from=2026-10-26&to=2026-10-25", out html) == 400
                     && store.Count(true, "rss") == 4, "reversed dates cannot mark articles read");
-                Expect(Request(route, "POST", origin, "token=" + token + "&feed=rss&through=" + store.LatestArrival() + "&" + dates, out html) == 303
+                Expect(Request(route, "POST", origin, "token=" + token + "&feed=otherfeed&target-feed=rss&through=" + store.LatestArrival() + "&" + dates, out html) == 303
                     && store.Items(true, "rss").Select(row => row[0]).OrderBy(id => id).SequenceEqual(new[] { after.id, prior.id }),
-                    "bulk read leaves articles outside the selected dates unread");
+                    "a sidebar bulk read targets its feed and leaves articles outside the selected dates unread");
             }
         }
         finally

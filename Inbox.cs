@@ -177,6 +177,9 @@ internal sealed class Inbox : IDisposable
             { Reply(context, 400, "Choose a valid date range and a search of at most 120 characters."); return; }
             dates = dates.WithFlags(ViewFlags(form));
             var group = GroupId(form["group"]);
+            // Sidebar actions name their target separately from the view to return to.
+            var targetFeed = form["target-feed"];
+            var actionFeed = SourceName(targetFeed ?? form["feed"]);
             string result = "";
 
             // Only an explicit read/unread form can change read state.
@@ -280,6 +283,26 @@ internal sealed class Inbox : IDisposable
                     if ((mode != "original" && mode != "discussion") || !store.SetOpenDiscussion(SourceName(form["edited-feed"]), mode == "discussion"))
                     { Reply(context, 400, "Choose a shortcut for an RSS or Atom feed."); return; }
                     break;
+                case "/feed-settings":
+                    var settingsFeed = SourceName(form["edited-feed"]);
+                    var settingsLabel = (form["label"] ?? "").Trim();
+                    var settingsGroups = (form.GetValues("membership") ?? new string[0]).Select(GroupId).ToArray();
+                    if (settingsFeed == "" || settingsLabel.Length > 120 || settingsLabel.Any(char.IsControl) || settingsGroups.Any(groupId => groupId == 0))
+                    { Reply(context, 400, "Choose a feed, valid groups, and a name of up to 120 characters."); return; }
+                    // Only RSS and Atom subscriptions have an editable URL and open action.
+                    Uri settingsUrl = null;
+                    var openMode = form["open"];
+                    if (IsRssKey(settingsFeed) && (!RssCollector.TryFeedUrl((form["url"] ?? "").Trim(), out settingsUrl)
+                        || (openMode != "original" && openMode != "discussion")))
+                    { Reply(context, 400, "Enter a valid HTTP or HTTPS feed URL and choose an open action."); return; }
+                    var saved = store.SaveFeedSettings(settingsFeed, settingsLabel, settingsGroups, settingsUrl, form["version"], openMode == "discussion");
+                    if (saved == Store.RssSourceEdit.Missing) { Reply(context, 404, "The feed is no longer subscribed."); return; }
+                    if (saved == Store.RssSourceEdit.Stale) { Reply(context, 409, "The source URL changed. Reopen Settings to try again."); return; }
+                    if (saved == Store.RssSourceEdit.Duplicate) { Reply(context, 409, "Another subscription already uses this URL."); return; }
+                    if (saved == Store.RssSourceEdit.InvalidGroups) { Reply(context, 400, "One of the groups is no longer available."); return; }
+                    // Keep the feed open if its former group was unchecked.
+                    if (group != 0 && form["feed"] == settingsFeed && !settingsGroups.Contains(group)) group = settingsGroups.FirstOrDefault();
+                    break;
                 case "/delete-feed":
                     var deletedFeed = SourceName(form["edited-feed"]);
                     if (deletedFeed == "" || !store.DeleteFeed(deletedFeed))
@@ -290,10 +313,10 @@ internal sealed class Inbox : IDisposable
                 case "/collection":
                     if (form["action"] != "pause" && form["action"] != "resume") { Reply(context, 400, "Choose pause or resume."); return; }
                     var pause = form["action"] == "pause";
-                    // Only an empty feed field selects the global setting. A stale feed cannot change it.
-                    if (!string.IsNullOrEmpty(form["feed"]))
+                    // An explicit target can never fall back to the global setting if it is stale.
+                    if (targetFeed != null || !string.IsNullOrEmpty(form["feed"]))
                     {
-                        if (!store.SetFeedPaused(SourceName(form["feed"]), pause)) { Reply(context, 404, "This feed is no longer subscribed."); return; }
+                        if (actionFeed == "" || !store.SetFeedPaused(actionFeed, pause)) { Reply(context, 404, "This feed is no longer subscribed."); return; }
                     }
                     else
                     {
@@ -321,21 +344,20 @@ internal sealed class Inbox : IDisposable
                     Reply(context, 200, "{\"marked\":" + state[0] + ",\"read\":" + (state[1] == null ? "0" : "1") + "}", "application/json; charset=utf-8");
                     return;
                 case "/mark-feed-read":
-                    // No group or All feeds selection can trigger a bulk read action.
-                    var feed = SourceName(form["feed"]);
-                    if (feed == "" || !store.HasSource(feed)) { Reply(context, 400, "Select a subscribed feed."); return; }
+                    // A bulk read always targets one subscription, even from an aggregate view.
+                    if (actionFeed == "" || !store.HasSource(actionFeed)) { Reply(context, 400, "Select a subscribed feed."); return; }
                     long through;
                     if (!long.TryParse(form["through"], NumberStyles.None, CultureInfo.InvariantCulture, out through))
                     { Reply(context, 400, "Reload the feed before marking it read."); return; }
                     var batch = Guid.NewGuid().ToString("N");
-                    long marked = store.MarkFeedRead(feed, dates, batch, through);
+                    long marked = store.MarkFeedRead(actionFeed, dates, batch, through);
                     result = "&marked=" + marked.ToString(CultureInfo.InvariantCulture) + (marked > 0 ? "&batch=" + batch : "");
+                    if (targetFeed != null) result += "&receipt-feed=" + Uri.EscapeDataString(actionFeed);
                     break;
                 case "/undo-feed-read":
-                    var undoFeed = SourceName(form["feed"]);
                     var undoBatch = form["batch"] ?? "";
-                    if (undoFeed == "" || !IsBatch(undoBatch)) { Reply(context, 400, "That read receipt is not available."); return; }
-                    result = "&restored=" + store.UndoFeedRead(undoFeed, undoBatch).ToString(CultureInfo.InvariantCulture);
+                    if (actionFeed == "" || !IsBatch(undoBatch)) { Reply(context, 400, "That read receipt is not available."); return; }
+                    result = "&restored=" + store.UndoFeedRead(actionFeed, undoBatch).ToString(CultureInfo.InvariantCulture);
                     break;
                 case "/check":
                     var batchOutcome = await check(null);
@@ -352,9 +374,8 @@ internal sealed class Inbox : IDisposable
                     break;
                 case "/check-feed":
                     // An invalid target must never fall back to checking the scheduled batch.
-                    var target = SourceName(form["feed"]);
-                    if (target == "" || !store.HasSource(target)) { Reply(context, 400, "Select a subscribed feed."); return; }
-                    var outcome = await check(target);
+                    if (actionFeed == "" || !store.HasSource(actionFeed)) { Reply(context, 400, "Select a subscribed feed."); return; }
+                    var outcome = await check(actionFeed);
                     if (form["inline"] == "1") { Reply(context, 200, outcome, "text/plain; charset=utf-8"); return; }
                     break;
                 case "/delete-read":
@@ -508,12 +529,16 @@ internal sealed class Inbox : IDisposable
             .Append(E(allStatus.Message)).Append("</p><p id=key-status role=status></p></header>");
         long markedCount;
         var batch = query["batch"] ?? "";
-        if (byName.ContainsKey(source) && long.TryParse(query["marked"], NumberStyles.None, CultureInfo.InvariantCulture, out markedCount))
+        var receiptFeed = SourceName(query["receipt-feed"] ?? source);
+        if (byName.ContainsKey(receiptFeed) && long.TryParse(query["marked"], NumberStyles.None, CultureInfo.InvariantCulture, out markedCount))
         {
+            // Keep the receipt and Undo attached to the feed the reader acted on.
+            var feedNote = receiptFeed == source ? "" : " in " + E(byName[receiptFeed][3]);
             html.Append("<div role=status class=bulk-receipt>").Append(markedCount == 0 ? "No unread articles to mark." :
-                "Marked " + markedCount.ToString("N0", CultureInfo.CurrentCulture) + (markedCount == 1 ? " article" : " articles") + " as read.");
-            if (IsBatch(batch) && store.CanUndoFeedRead(source, batch))
-                html.Append(" ").Append(Form("undo-feed-read", "<input type=hidden name=batch value='" + E(batch) + "'><button>Undo</button>", unread, source, oldest, group, dates));
+                "Marked " + markedCount.ToString("N0", CultureInfo.CurrentCulture) + (markedCount == 1 ? " article" : " articles") + " as read" + feedNote + ".");
+            if (IsBatch(batch) && store.CanUndoFeedRead(receiptFeed, batch))
+                html.Append(" ").Append(Form("undo-feed-read", "<input type=hidden name=batch value='" + E(batch) + "'>"
+                    + "<input type=hidden name=target-feed value='" + E(receiptFeed) + "'><button>Undo</button>", unread, source, oldest, group, dates));
             html.Append("</div>");
         }
         long restored;
@@ -690,22 +715,25 @@ internal sealed class Inbox : IDisposable
     {
         // One shared menu and dialog follow whichever feed button the reader opens.
         const string edited = "<input type=hidden name=edited-feed>";
+        const string target = "<input type=hidden name=target-feed>";
         const string actions = "<div class=dialog-actions><button type=submit>Save</button><button type=button class=cancel-feed-edit>Cancel</button></div>";
         var choices = new StringBuilder("<fieldset><legend>Groups</legend>");
         foreach (var folder in groups)
             choices.Append("<label><input type=checkbox name=membership value='").Append(folder.Id).Append("'> ")
                 .Append(E(folder.Name)).Append("</label>");
         choices.Append("</fieldset>");
-        return "<div class=feed-menu hidden><button type=button data-edit=rename>Rename</button>"
-            + "<button type=button data-edit=source>Edit source</button>"
-            + "<button type=button data-edit=reorganize>Reorganize feed</button><button type=button data-edit=shortcut>V shortcut</button>"
-            + "<button type=button data-edit=delete>Delete feed&hellip;</button></div>"
+        return "<div class=feed-menu hidden>"
+            + Form("collection", target + "<button type=submit name=action value=pause>Pause</button>", unread, source, oldest, group, dates)
+            + Form("check-feed", target + "<button type=submit>Refresh</button>", unread, source, oldest, group, dates)
+            + Form("mark-feed-read", target + "<button type=submit" + ((dates.Flags & ArticleFilter.Inbox) == ArticleFilter.Inbox ? "" : " disabled")
+                + ">Mark as read</button>", unread, source, oldest, group, dates)
+            + "<button type=button data-edit=delete>Delete</button><button type=button data-edit=settings>Settings</button></div>"
             + "<dialog class=feed-editor aria-labelledby=feed-editor-title><h2 id=feed-editor-title></h2>"
-            + Form("rename-feed", edited + "<label>Feed name <input name=label maxlength=120></label>" + actions, unread, source, oldest, group, dates)
-            + Form("edit-source", edited + "<input type=hidden name=version><label>RSS or Atom URL <input type=url name=url required maxlength=2000></label>" + actions, unread, source, oldest, group, dates)
-            + Form("reorganize-feed", edited + choices + actions, unread, source, oldest, group, dates)
-            + Form("feed-shortcut", edited + "<label>V opens <select name=open><option value=original>Original article</option>"
-                + "<option value=discussion>Discussion (if available)</option></select></label>" + actions, unread, source, oldest, group, dates)
+            + Form("feed-settings", edited + "<label>Feed name <input name=label maxlength=120></label>" + choices
+                + "<fieldset class=feed-rss-settings><legend>RSS or Atom</legend><input type=hidden name=version>"
+                + "<label>Source URL <input type=url name=url required maxlength=2000></label>"
+                + "<label>&ldquo;Open article&rdquo; action <select name=open><option value=original>Original article</option>"
+                + "<option value=discussion>Discussion (if available)</option></select></label></fieldset>" + actions, unread, source, oldest, group, dates)
             + Form("delete-feed", edited + "<p>This removes the subscription from every group and deletes all its saved articles from feedbox.</p>"
                 + "<div class=dialog-actions><button type=button class=cancel-feed-edit>Cancel</button><button type=submit>Delete feed</button></div>", unread, source, oldest, group, dates)
             + "<p class=feed-editor-error role=status></p></dialog>";
