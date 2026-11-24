@@ -935,8 +935,11 @@
     function updateMoreFeeds() {
         // Show all affects sidebar visibility only; the badges still reflect the current article filters.
         const flat = flatFeedSort();
+        // Keep red feed names discoverable even when their counts and their group's count are zero.
+        const redFeed = '.feed[data-feed].has-check-warning:not(.feed-paused)';
         for (const group of nav.querySelectorAll(':scope > .feed-group')) {
-            group.hidden = flat || (!showAll.checked && Number(group.querySelector('.group-link .count').textContent) === 0);
+            group.hidden = flat || (!showAll.checked && Number(group.querySelector('.group-link .count').textContent) === 0
+                && !group.querySelector(redFeed));
         }
         for (const section of nav.querySelectorAll('.group-members, .ungrouped-feeds')) {
             if (flat !== (section.id === 'flat-feeds')) continue;
@@ -945,8 +948,8 @@
             const expanded = expandedMoreFeeds.has(section.id);
             let zeroUnread = 0;
             for (const link of section.querySelectorAll('.feed[data-feed]')) {
-                // Apply the same zero-unread rule to the current feed as to every other feed.
-                const tuckAway = Number(link.querySelector('.count').textContent) === 0;
+                // Warning feeds stay out of the More feeds bucket until the red status clears.
+                const tuckAway = Number(link.querySelector('.count').textContent) === 0 && !link.matches(redFeed);
                 link.hidden = tuckAway && !expanded && !showAll.checked;
                 if (link.parentElement.classList.contains('feed-row')) link.parentElement.hidden = link.hidden;
                 if (tuckAway) zeroUnread++;
