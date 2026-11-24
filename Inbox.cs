@@ -452,9 +452,8 @@ internal sealed class Inbox : IDisposable
         // Keep feed navigation independent of the centered reading stream.
         var html = new StringBuilder("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>feedbox</title><link rel=stylesheet href='/inbox.css'><script src='/inbox.js' defer></script>");
         html.Append("<body data-unread='").Append(unread ? "1" : "0").Append("' data-flags='").Append(dates.Flags).Append("'><aside>");
-        AppendSidebarTools(html, unread, source, oldest, group, dates);
+        AppendSidebarTools(html, unread, source, oldest, group, dates, counts.Values.Sum());
         html.Append("<nav aria-label='Feeds'><div class=feed-pins>");
-        html.Append(FeedLink("", "All feeds", source, unread, counts.Values.Sum(), oldest, 0, group, dates));
         html.Append("<div class=pinned-group hidden></div><div class=pinned-feed hidden></div></div>");
         var grouped = new System.Collections.Generic.HashSet<string>();
         // Use the saved folder order and sort feeds by their displayed names.
@@ -608,10 +607,12 @@ internal sealed class Inbox : IDisposable
             .Append("</span>/</span><span data-count=total>").Append(counts[2]).Append("</span></span>");
     }
 
-    private void AppendSidebarTools(StringBuilder html, bool unread, string source, bool oldest, int group, ArticleFilter dates)
+    private void AppendSidebarTools(StringBuilder html, bool unread, string source, bool oldest, int group, ArticleFilter dates, long total)
     {
         // Keep management controls in a disclosure so opening them doesn't resize the feed list.
-        html.Append("<div class=sidebar-header><strong class=brand>feed(in)box</strong><details class=sidebar-tools>")
+        html.Append("<div class='sidebar-header feed-row'>")
+            .Append(FeedLink("", "feed(in)box", source, unread, total, oldest, 0, group, dates))
+            .Append("<details class=sidebar-tools>")
             .Append("<summary aria-label='Sidebar options' title='Sidebar options'>&#x22EF;</summary><div class=sidebar-tools-panel>")
             .Append("<label class=show-all-label hidden><input class=show-all-feeds type=checkbox> Show all</label>")
             .Append("<label class=feed-sort-label hidden>Sort feeds<select class=feed-sort><option value=name>Grouped: by name</option><option value=group-count>Grouped: by count</option><option value=all-count>All feeds: by count</option></select></label>");

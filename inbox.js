@@ -203,7 +203,7 @@
             const availableIcons = new Set(icons || []);
             const feedWarnings = new Set(warnings || []);
             const paused = new Set(pausedFeeds || []);
-            for (const link of nav.querySelectorAll('.feed[data-feed]')) {
+            for (const link of document.querySelectorAll('aside .feed[data-feed]')) {
                 let count = total;
                 if (link.dataset.feed) {
                     count = unread(link.dataset.feed);
@@ -317,10 +317,11 @@
     function applyView(page, url, historyMode, focus, resume = false) {
         const nextMain = page.querySelector('main');
         const nextNav = page.querySelector('aside nav');
+        const nextOverview = page.querySelector('.sidebar-header > .feed');
         // Refresh form tokens and targets while keeping the disclosure and its sort control mounted.
         const panels = [...document.querySelectorAll('.sidebar-tools-panel > details')];
         const nextPanels = [...page.querySelectorAll('.sidebar-tools-panel > details')];
-        if (!nextMain?.querySelector('#entries') || !nextMain.querySelector('.feed-header') || !nextNav || panels.length !== nextPanels.length)
+        if (!nextMain?.querySelector('#entries') || !nextMain.querySelector('.feed-header') || !nextNav || !nextOverview || panels.length !== nextPanels.length)
             throw new Error('feedbox returned an incomplete view.');
 
         // Update the server-rendered view without rebuilding the sidebar shell or the document.
@@ -334,6 +335,7 @@
         closeFeedMenu();
         closeCountTip();
         previewObserver.disconnect();
+        document.querySelector('.sidebar-header > .feed').replaceWith(nextOverview);
         nav.replaceChildren(...nextNav.children);
         panels.forEach((panel, i) => panel.replaceChildren(...nextPanels[i].children));
         main.replaceChildren(...nextMain.children);
@@ -416,15 +418,16 @@
         button.setAttribute('aria-expanded', 'true');
         const menu = main.querySelector('.feed-menu');
         const link = button.closest('.feed-row').querySelector('a.feed');
+        const feed = link.dataset.feed ?? link.dataset.pinnedFeed;
         // Bind the menu to the clicked feed, independently of the open reading view.
-        for (const form of menu.querySelectorAll('form')) form.elements['target-feed'].value = link.dataset.feed;
+        for (const form of menu.querySelectorAll('form')) form.elements['target-feed'].value = feed;
         const pause = menu.querySelector('form[action="/collection"] button');
         const paused = link.classList.contains('feed-paused');
         pause.value = paused ? 'resume' : 'pause';
         pause.textContent = paused ? 'Resume' : 'Pause';
         const refresh = menu.querySelector('form[action="/check-feed"]');
         refresh.dataset.targetLabel = link.querySelector('.feed-label').textContent;
-        refresh.querySelector('button').disabled = Boolean(checks.get('/check-feed:' + link.dataset.feed)?.pending);
+        refresh.querySelector('button').disabled = Boolean(checks.get('/check-feed:' + feed)?.pending);
         const anchor = button.getBoundingClientRect();
         // Place the shared menu outside the scrolling sidebar so the last row's menu cannot be clipped.
         menu.hidden = false;
@@ -492,17 +495,18 @@
         }, 300);
     }
 
-    // Delegate to the sidebar so both regular links and the sticky copies use the same tooltip.
-    nav.addEventListener('pointerover', event => {
+    // The overview title, normal rows, and pinned rows share the count tooltip.
+    const sidebar = nav.closest('aside');
+    sidebar.addEventListener('pointerover', event => {
         if (event.pointerType !== 'touch') openCountTip(event.target.closest('a.feed'));
     });
-    nav.addEventListener('pointerout', event => {
+    sidebar.addEventListener('pointerout', event => {
         if (pendingCountTip?.link.contains(event.target) && !pendingCountTip.link.contains(event.relatedTarget)) closeCountTip();
     });
-    nav.addEventListener('focusin', event => openCountTip(event.target.closest('a.feed')));
-    nav.addEventListener('focusout', closeCountTip);
+    sidebar.addEventListener('focusin', event => openCountTip(event.target.closest('a.feed')));
+    sidebar.addEventListener('focusout', closeCountTip);
     nav.addEventListener('scroll', closeCountTip, { passive: true });
-    nav.addEventListener('pointerdown', closeCountTip);
+    sidebar.addEventListener('pointerdown', closeCountTip);
     document.addEventListener('keydown', event => { if (event.key === 'Escape') closeCountTip(); });
     window.addEventListener('resize', closeCountTip);
     window.addEventListener('blur', closeCountTip);
@@ -542,6 +546,7 @@
         const action = event.target.closest('.feed-menu button')?.dataset.edit;
         if (!action || !menuButton) return;
         const link = menuButton.closest('.feed-row').querySelector('a.feed');
+        const feed = link.dataset.feed ?? link.dataset.pinnedFeed;
         const name = link.querySelector('.feed-label').textContent;
         const dialog = main.querySelector('.feed-editor');
         const settings = dialog.querySelector('form[action="/feed-settings"]');
@@ -552,7 +557,7 @@
         const form = deleting ? remove : settings;
         settings.hidden = deleting;
         remove.hidden = !deleting;
-        form.elements['edited-feed'].value = link.dataset.feed;
+        form.elements['edited-feed'].value = feed;
         const isRss = link.classList.contains('rss-feed');
         if (!deleting) {
             settings.elements.label.value = name;
@@ -561,7 +566,7 @@
             rss.hidden = rss.disabled = !isRss;
             settings.querySelector('button[type=submit]').disabled = false;
             // Include hidden feed rows: unread filtering does not change membership.
-            const groups = new Set([...nav.querySelectorAll('.group-members a.feed[data-feed]')].filter(a => a.dataset.feed === link.dataset.feed).map(a => a.dataset.group));
+            const groups = new Set([...nav.querySelectorAll('.group-members a.feed[data-feed]')].filter(a => a.dataset.feed === feed).map(a => a.dataset.group));
             for (const input of settings.querySelectorAll('[name=membership]')) input.checked = groups.has(input.value);
         }
         menuButton.focus({ preventScroll: true });
@@ -640,7 +645,7 @@
     document.addEventListener('click', async event => {
         // Intercept only inbox controls; let the browser handle new tabs and original articles.
         if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-        const link = event.target.closest('aside nav a.feed, .toolbar > a, .date-clear, .clear-search, #more');
+        const link = event.target.closest('aside a.feed, .toolbar > a, .date-clear, .clear-search, #more');
         if (!link) return;
         event.preventDefault();
         if (link.id !== 'more') { navigate(link.href); return; }
@@ -865,6 +870,7 @@
     const feedSortKey = 'feedbox.feed-sort';
     const originalFeedOrder = new WeakMap();
     const countFeedOrder = new Map();
+    let sidebarPinTargets = [];
     const feedNames = new Intl.Collator(undefined, { sensitivity: 'base' });
     try {
         const mode = localStorage.getItem(feedSortKey);
@@ -876,6 +882,7 @@
     const flatFeedSort = () => !showAll.checked && feedSort.value === 'all-count';
 
     function applyFeedSort() {
+        syncGroupedSelection();
         const flat = flatFeedSort();
         for (const section of nav.querySelectorAll(':scope > .feed-section-label, #ungrouped-feeds')) section.hidden = flat;
         const existing = nav.querySelector('#flat-feeds');
@@ -912,8 +919,24 @@
 
     function activeFeedLinks() {
         // Both lists receive badge updates, but only the displayed list drives navigation.
-        const selector = flatFeedSort() ? '.feed-pins > a.feed, #flat-feeds a.feed' : 'a.feed[data-feed]';
+        const selector = flatFeedSort() ? '#flat-feeds a.feed' : 'a.feed[data-feed]';
         return [...nav.querySelectorAll(selector)];
+    }
+
+    function syncGroupedSelection() {
+        const view = new URL(displayedUrl).searchParams;
+        const feed = view.get('feed');
+        const group = view.get('group') || '0';
+        const links = [...nav.querySelectorAll('.feed-group .feed-row > a.feed, #ungrouped-feeds .feed-row > a.feed')];
+        const members = feed ? links.filter(link => link.dataset.feed === feed) : [];
+        // A feed opened from the flat list has no group in its URL. Use its first membership.
+        const current = members.find(link => link.dataset.group === group) || members[0];
+        for (const link of links) {
+            if (link === current) link.setAttribute('aria-current', 'page');
+            else link.removeAttribute('aria-current');
+        }
+        for (const link of nav.querySelectorAll('.group-link'))
+            link.toggleAttribute('data-active-group', link.dataset.group === (feed ? current?.dataset.group : group));
     }
 
     const hasMatchingArticles = link => Number(link.querySelector('.count').textContent) > 0;
@@ -994,6 +1017,12 @@
     restoreGroups();
     sortSidebarFeeds();
     updateMoreFeeds();
+    nav.addEventListener('scroll', updateSidebarPinVisibility, { passive: true });
+    new ResizeObserver(() => {
+        // Align the header counter and menu with the list whether the scrollbar overlays it or takes space.
+        sidebar.style.setProperty('--sidebar-scrollbar', `${nav.offsetWidth - nav.clientWidth}px`);
+        updateSidebarPinVisibility();
+    }).observe(nav);
     showAll.addEventListener('change', () => {
         closeFeedMenu();
         try { localStorage.setItem(showAllKey, showAll.checked ? '1' : '0'); } catch { /* Use the choice for this tab. */ }
@@ -1008,6 +1037,7 @@
         countFeedOrder.clear();
         try { localStorage.setItem(feedSortKey, feedSort.value); } catch { /* Use the choice for this tab. */ }
         applyFeedSort();
+        restoreGroups();
         sortSidebarFeeds();
         updateMoreFeeds();
         revealCurrentFeed();
@@ -1029,6 +1059,7 @@
         if (expanded) collapsed.delete(id);
         else collapsed.add(id);
         try { localStorage.setItem(collapseKey, JSON.stringify([...collapsed])); } catch { /* Keep the current view. */ }
+        updateSidebarPinVisibility();
     });
 
     const onScreen = row => {
@@ -1381,30 +1412,74 @@
         // A feed opened without a group still has a shortcut when switching back to grouped sorting.
         const feedUrl = feed && new URL(feed.href);
         if (feedUrl && !selected && !view.searchParams.get('group')) feedUrl.searchParams.delete('group');
-        syncPinnedLink(nav.querySelector('.pinned-group'), group, group?.href);
-        syncPinnedLink(nav.querySelector('.pinned-feed'), feed, feedUrl?.href);
+        sidebarPinTargets = [
+            { pin: nav.querySelector('.pinned-group'), link: group, href: group?.href },
+            { pin: nav.querySelector('.pinned-feed'), link: feed, href: feedUrl?.href },
+        ];
+        for (const { pin, link, href } of sidebarPinTargets) syncPinnedLink(pin, link, href);
+        updateSidebarPinVisibility();
     }
 
     function syncPinnedLink(pin, link, href) {
-        pin.hidden = !link;
-        if (!link) return;
-        let shortcut = pin.firstElementChild;
+        if (!link) { pin.hidden = true; return; }
+        let shortcut = pin.querySelector('a.feed');
         if (shortcut?.href !== href) {
-            shortcut = link.cloneNode(true);
+            // Copy the feed's options button as well as its link so both rows use the same menu.
+            const row = link.dataset.feed ? link.closest('.feed-row').cloneNode(true) : null;
+            shortcut = row ? row.querySelector('a.feed') : link.cloneNode(true);
+            if (row) {
+                row.hidden = false;
+                row.querySelector('.feed-options').setAttribute('aria-expanded', 'false');
+            }
             // The original link remains the source of counts and keyboard navigation.
             shortcut.removeAttribute('aria-current');
-            if (shortcut.dataset.feed) shortcut.dataset.pinnedFeed = '';
+            shortcut.removeAttribute('data-active-group');
+            shortcut.removeAttribute('aria-describedby');
+            shortcut.hidden = false;
+            if (shortcut.dataset.feed) shortcut.dataset.pinnedFeed = shortcut.dataset.feed;
             delete shortcut.dataset.feed;
             shortcut.draggable = false;
             shortcut.href = href;
-            pin.replaceChildren(shortcut);
+            pin.replaceChildren(row || shortcut);
         }
+        // The parent group can be pinned for context without becoming the selected view.
+        shortcut.classList.toggle('is-current-pin', link.getAttribute('aria-current') === 'page');
         const count = link.querySelector('.count').textContent;
         const badge = shortcut.querySelector('.count');
         if (badge.textContent !== count) badge.textContent = count;
         setFeedCheckState(shortcut, link.classList.contains('has-check-warning'), link.classList.contains('feed-paused'));
         // An icon may arrive after the shortcut was first cloned.
         if (link.dataset.feed && link.querySelector('.feed-site-icon:not([hidden])')) addFeedIcon(shortcut, link.dataset.feed);
+    }
+
+    function updateSidebarPinVisibility() {
+        const targets = sidebarPinTargets.filter(({ link }) => link);
+        if (!targets.length) return;
+        const block = nav.querySelector('.feed-pins');
+        // The overview is outside the scroll area; only the optional shortcuts take space here.
+        const rowHeight = parseFloat(getComputedStyle(targets[0].pin.querySelector('a.feed')).minHeight);
+        const extra = targets.reduce((sum, { pin }) => sum + pin.getBoundingClientRect().height, 0);
+        const baseHeight = block.getBoundingClientRect().height - extra;
+        const navTop = nav.getBoundingClientRect().top + nav.clientTop;
+        const navBottom = navTop + nav.clientHeight;
+        const scroll = nav.scrollTop;
+        const rows = targets.map(({ link }) => link.closest('[hidden]') ? null : link.getBoundingClientRect());
+
+        // Adding a pin shifts normal rows down. Choose the fewest pins whose projected layout
+        // leaves the other normal rows visible, rather than measuring only the current layout.
+        const combinations = 1 << targets.length;
+        let mask = 0;
+        for (; mask < combinations - 1; mask++) {
+            const height = (Number(Boolean(mask & 1)) + Number(Boolean(mask & 2))) * rowHeight;
+            const nextScroll = Math.min(scroll, Math.max(0, nav.scrollHeight - extra + height - nav.clientHeight));
+            const shift = height - extra + scroll - nextScroll;
+            const pinnedBottom = navTop + baseHeight + height;
+            if (rows.every((row, i) => (mask & (1 << i)) || (row && row.top + shift >= pinnedBottom - 1 && row.bottom + shift <= navBottom + 1))) break;
+        }
+        targets.forEach(({ pin }, i) => {
+            pin.hidden = !(mask & (1 << i));
+            if (pin.hidden && pin.contains(menuButton)) closeFeedMenu();
+        });
     }
 
     // Keep the selected row clear of the labels pinned over the top of the list.
