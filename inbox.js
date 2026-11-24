@@ -8,7 +8,6 @@
     let busy = false;
     let navigation;
     let displayedUrl = location.href;
-    let feedNavigationOrder = null;
     let readRevision = 0;
     let readerTail = 0;
     const rows = () => Array.from(entries.querySelectorAll('article[data-post]'));
@@ -327,6 +326,9 @@
         // Update the server-rendered view without rebuilding the sidebar shell or the document.
         const sidebarScroll = nav.scrollTop;
         const sameView = historyMode === 'preserve' || url === displayedUrl;
+        // A new article filter changes what the sidebar counts; switching feeds does not.
+        if (sidebarCountScope(url, page.body.dataset.flags) !== sidebarCountScope(displayedUrl, document.body.dataset.flags))
+            countFeedOrder.clear();
         const readerScroll = window.scrollY;
         const statusOpen = sameView && header.querySelector('.check-status').open;
         closeFeedMenu();
@@ -345,11 +347,10 @@
         status = main.querySelector('#key-status');
         header.querySelector('.check-status').open = statusOpen;
         selected = null;
-        // Preserve the keyboard position across receipts for the same feed and filters.
-        if (readingKey(url) !== readingKey(displayedUrl)) feedNavigationOrder = null;
         displayedUrl = url;
         applyFeedSort();
         restoreGroups();
+        sortSidebarFeeds();
         updateMoreFeeds();
         nav.scrollTop = sidebarScroll;
         revealCurrentFeed();
@@ -863,6 +864,7 @@
     });
     const feedSortKey = 'feedbox.feed-sort';
     const originalFeedOrder = new WeakMap();
+    const countFeedOrder = new Map();
     const feedNames = new Intl.Collator(undefined, { sensitivity: 'base' });
     try {
         const mode = localStorage.getItem(feedSortKey);
@@ -914,17 +916,20 @@
         return [...nav.querySelectorAll(selector)];
     }
 
-    const feedNavigationKey = link => `${link.dataset.group}:${link.dataset.feed}`;
     const hasMatchingArticles = link => Number(link.querySelector('.count').textContent) > 0;
 
-    function rememberFeedNavigationOrder() {
-        if (feedNavigationOrder || feedSort.value === 'name' || document.body.dataset.unread === '0') return;
-        const links = activeFeedLinks().filter(link => link.dataset.feed);
-        const current = links.find(link => link.getAttribute('aria-current') === 'page');
-        // Remember the position where reading started, before its falling count moves the feed down.
-        if (current && hasMatchingArticles(current)) {
-            feedNavigationOrder = { current: feedNavigationKey(current), keys: links.map(feedNavigationKey) };
-        }
+    function sidebarCountScope(url, flags) {
+        const params = new URL(url).searchParams;
+        return JSON.stringify([flags, ...['from', 'to', 'q'].map(key => params.get(key) || '')]);
+    }
+
+    function sidebarFeedSections() {
+        const flat = flatFeedSort();
+        return [...nav.querySelectorAll('.group-members, .ungrouped-feeds')].filter(section => flat === (section.id === 'flat-feeds'));
+    }
+
+    function sortSidebarFeeds() {
+        for (const section of sidebarFeedSections()) sortFeedRows(section, section.querySelector('.more-feeds'));
     }
 
     function sortFeedRows(section, more) {
@@ -932,10 +937,15 @@
         if (!originalFeedOrder.has(section)) originalFeedOrder.set(section, new Map(order.map((row, i) => [row, i])));
         const original = originalFeedOrder.get(section);
         const byCount = feedSort.value !== 'name';
+        const previous = byCount ? countFeedOrder.get(section.id) : null;
+        const key = row => row.querySelector('a.feed').dataset.feed;
+        // Restore saved positions when navigation replaces the sidebar; append newly added rows.
+        const rank = row => previous ? previous.get(key(row)) ?? previous.size : 0;
         const count = row => Number(row.querySelector('.count').textContent);
         const label = row => row.querySelector('.feed-label').textContent;
-        const sorted = [...order].sort((a, b) => (byCount ? count(b) - count(a) : 0)
+        const sorted = [...order].sort((a, b) => rank(a) - rank(b) || (byCount ? count(b) - count(a) : 0)
             || (section.id === 'flat-feeds' ? feedNames.compare(label(a), label(b)) : original.get(a) - original.get(b)));
+        if (byCount) countFeedOrder.set(section.id, new Map(sorted.map((row, i) => [key(row), i])));
         if (sorted.every((row, i) => row === order[i])) return;
 
         // Move only out-of-order rows, retaining focus and keeping More feeds at the end.
@@ -959,10 +969,9 @@
             group.hidden = flat || (!showAll.checked && Number(group.querySelector('.group-link .count').textContent) === 0
                 && !group.querySelector(redFeed));
         }
-        for (const section of nav.querySelectorAll('.group-members, .ungrouped-feeds')) {
-            if (flat !== (section.id === 'flat-feeds')) continue;
+        // Badge updates can hide an empty row, but leave its place in the reading order intact.
+        for (const section of sidebarFeedSections()) {
             const more = section.querySelector('.more-feeds');
-            sortFeedRows(section, more);
             const expanded = expandedMoreFeeds.has(section.id);
             let zeroUnread = 0;
             for (const link of section.querySelectorAll('.feed[data-feed]')) {
@@ -977,28 +986,29 @@
             more.textContent = expanded ? 'Show fewer feeds' : `${zeroUnread} more ${zeroUnread === 1 ? 'feed' : 'feeds'}`;
         }
         syncSidebarPins();
-        rememberFeedNavigationOrder();
     }
 
     showAll.closest('label').hidden = false;
     feedSort.closest('label').hidden = false;
     applyFeedSort();
     restoreGroups();
+    sortSidebarFeeds();
     updateMoreFeeds();
     showAll.addEventListener('change', () => {
         closeFeedMenu();
-        feedNavigationOrder = null;
         try { localStorage.setItem(showAllKey, showAll.checked ? '1' : '0'); } catch { /* Use the choice for this tab. */ }
         applyFeedSort();
         restoreGroups();
+        sortSidebarFeeds();
         updateMoreFeeds();
         revealCurrentFeed();
     });
     feedSort.addEventListener('change', () => {
         closeFeedMenu();
-        feedNavigationOrder = null;
+        countFeedOrder.clear();
         try { localStorage.setItem(feedSortKey, feedSort.value); } catch { /* Use the choice for this tab. */ }
         applyFeedSort();
+        sortSidebarFeeds();
         updateMoreFeeds();
         revealCurrentFeed();
     });
@@ -1071,19 +1081,9 @@
 
     function moveFeed(direction) {
         // Keyboard feed switching follows visible sidebar entries.
-        let all = activeFeedLinks().filter(link => link.dataset.feed);
-        let current = all.findIndex(link => link.getAttribute('aria-current') === 'page');
+        const all = activeFeedLinks().filter(link => link.dataset.feed);
+        const current = all.findIndex(link => link.getAttribute('aria-current') === 'page');
         const unread = document.body.dataset.unread !== '0';
-        if (current >= 0 && unread && feedSort.value !== 'name' && !hasMatchingArticles(all[current])) {
-            // A drained feed is sorted below the unread feeds. Resume from its former position,
-            // resolving the saved order against current links so hidden and removed targets are skipped.
-            const key = feedNavigationKey(all[current]);
-            if (feedNavigationOrder?.current === key) {
-                const live = new Map(all.map(link => [feedNavigationKey(link), link]));
-                all = feedNavigationOrder.keys.map(key => live.get(key)).filter(Boolean);
-                current = all.findIndex(link => feedNavigationKey(link) === key);
-            } else current = -1; // A feed already empty when opened has no former unread position.
-        }
         const folder = flatFeedSort() ? null : nav.querySelector('.group-link[aria-current=page]');
         const groupFeeds = folder ? all.filter(link => link.dataset.group === folder.dataset.group) : [];
         const groupStart = direction > 0 ? groupFeeds[0] : groupFeeds.at(-1);
