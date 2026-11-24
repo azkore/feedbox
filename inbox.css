@@ -16,12 +16,14 @@
     --current-feed: #dceafb;
     --count-marked: #9a4500;
     --count-read: #20713e;
+    --check-warning: #bf1932;
     --accent: #286d45;
     --sidebar-width: 272px;
     --bar-height: 48px;
 }
 @media (prefers-color-scheme: dark) {
     :root { --paper:#171a19; --ink:#edf1ee; --body-ink:#edf1ee; --muted:#aebcb4; --nav:#202522; --rule:#3b463e; --marked-border:#60a5fa; --active:#303c34; --current-feed:#294660; --count-marked:#f5a256; --count-read:#91d5ad; --accent:#91d5ad; }
+    :root { --check-warning: #ff929d; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); }
@@ -48,6 +50,7 @@ aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain
 .feed-sort { width: 100%; min-width: 0; font: inherit; }
 .feed { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 32px; padding: 4px 10px; border-radius: 5px; color: var(--ink); text-decoration: none; font-size: 13px; }
 .feed-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed.has-check-warning .feed-label, .check-warning { color: var(--check-warning); }
 .feed:is([data-feed]:not([data-feed='']), [data-pinned-feed]) .feed-label::before { content: 'r/'; display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 9px; background: #d33d14; color: white; font: 700 10px/16px system-ui, sans-serif; text-align: center; }
 .feed.rss-feed:is([data-feed], [data-pinned-feed]) .feed-label::before { content: '◔'; background: #bc5914; }
 .feed .feed-label:has(.feed-site-icon:not([hidden]))::before { display: none; }

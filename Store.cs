@@ -724,6 +724,12 @@ internal sealed class Store : IDisposable
             ORDER BY name", source, group.ToString(CultureInfo.InvariantCulture));
     }
 
+    public List<string[]> FeedCheckHealth()
+    {
+        // Sidebar refreshes need only the saved check result and coverage note for each feed.
+        return Query("SELECT name,status,coverage_note FROM sources");
+    }
+
     public Dictionary<string, long> UnreadCounts(ArticleFilter dates = null)
     {
         // Use one SQLite snapshot for all badges, including feeds that appear in multiple groups.

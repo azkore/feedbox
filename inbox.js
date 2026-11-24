@@ -181,17 +181,19 @@
             for (const bound of ['from', 'to', 'q']) if (filter.has(bound)) url.searchParams.set(bound, filter.get(bound));
             const response = await fetch(url);
             if (!response.ok) return;
-            const { feeds, total, arrival, archive, icons } = await response.json();
+            const { feeds, total, arrival, archive, icons, warnings } = await response.json();
             // Discard a snapshot taken before a newer read action or view change.
             if (busy || navigation || entries !== view || readRevision !== revision) return;
             if (archive) updateHeadingCounts(archive);
             const unread = name => Object.hasOwn(feeds, name) ? feeds[name] : 0;
             const availableIcons = new Set(icons || []);
+            const feedWarnings = new Set(warnings || []);
             for (const link of nav.querySelectorAll('.feed[data-feed]')) {
                 let count = total;
                 if (link.dataset.feed) {
                     count = unread(link.dataset.feed);
                     if (availableIcons.has(link.dataset.feed)) addFeedIcon(link, link.dataset.feed);
+                    setCheckWarning(link, feedWarnings.has(link.dataset.feed));
                 }
                 else if (link.dataset.group !== '0') {
                     // Sum this group's feeds only; the global total counts each post once.
@@ -204,6 +206,13 @@
             if (arrival > Number(view.dataset.arrival)) await refreshArticles(view, revision);
         } catch { /* Preserve the current badges if the local app cannot be reached. */ }
         finally { countsPending = false; }
+    }
+
+    function setCheckWarning(link, warning) {
+        // Keep the visual cue and the accessible description in sync after a check.
+        link.classList.toggle('has-check-warning', warning);
+        if (warning) link.setAttribute('aria-description', 'Check status has a warning');
+        else link.removeAttribute('aria-description');
     }
 
     function addFeedIcon(link, key) {
@@ -1233,6 +1242,7 @@
         const count = link.querySelector('.count').textContent;
         const badge = shortcut.querySelector('.count');
         if (badge.textContent !== count) badge.textContent = count;
+        setCheckWarning(shortcut, link.classList.contains('has-check-warning'));
         // An icon may arrive after the shortcut was first cloned.
         if (link.dataset.feed && link.querySelector('.feed-site-icon:not([hidden])')) addFeedIcon(shortcut, link.dataset.feed);
     }

@@ -103,7 +103,8 @@ internal sealed class Inbox : IDisposable
                 var json = new System.Web.Script.Serialization.JavaScriptSerializer();
                 var archive = query["feed"] == null ? null : ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]));
                 Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival(), archive,
-                    icons = store.Icons.Available() }), "application/json; charset=utf-8");
+                    icons = store.Icons.Available(), warnings = store.FeedCheckHealth().Where(row => HasCheckWarning(row[1], row[2])).Select(row => row[0]).ToArray() }),
+                    "application/json; charset=utf-8");
                 return;
             }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/feed-icon")
@@ -438,7 +439,8 @@ internal sealed class Inbox : IDisposable
             foreach (var member in members)
             {
                 grouped.Add(member[0]);
-                html.Append(FeedLink(member[0], member[3], source, unread, countFor(member[0]), oldest, folder.Id, group, dates, member[5] == "1", icons.Contains(member[0])));
+                html.Append(FeedLink(member[0], member[3], source, unread, countFor(member[0]), oldest, folder.Id, group, dates, member[5] == "1",
+                    icons.Contains(member[0]), HasCheckWarning(member[1], member[4])));
             }
             // Keep all member links in alphabetical order when the reader reveals the zero-unread feeds.
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div></section>");
@@ -448,7 +450,8 @@ internal sealed class Inbox : IDisposable
         {
             if (groups.Count > 0) html.Append("<div class=feed-section-label>Ungrouped</div>");
             html.Append("<div class=ungrouped-feeds id=ungrouped-feeds>");
-            foreach (var s in ungrouped) html.Append(FeedLink(s[0], s[3], source, unread, countFor(s[0]), oldest, 0, group, dates, s[5] == "1", icons.Contains(s[0])));
+            foreach (var s in ungrouped) html.Append(FeedLink(s[0], s[3], source, unread, countFor(s[0]), oldest, 0, group, dates, s[5] == "1",
+                icons.Contains(s[0]), HasCheckWarning(s[1], s[4])));
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div>");
         }
         if (groups.Count > 0) html.Append("<div hidden>").Append(Form("move-feed", "", unread, source, oldest, group, dates)).Append("</div>");
@@ -678,6 +681,21 @@ internal sealed class Inbox : IDisposable
             + "<p class=feed-editor-error role=status></p></dialog>";
     }
 
+    private static bool HasCheckWarning(string status, string coverage)
+    {
+        // A successful latest check does not resolve a gap in earlier coverage.
+        if (!string.IsNullOrWhiteSpace(coverage)) return true;
+        // A Reddit check can save some posts before encountering a problem. Classify what follows the count.
+        var detail = Regex.Replace(status ?? "", @"\A(?:No new posts (?:found|added)\.|Added \d+ new posts?\.)\s*", "").Trim();
+        return detail != "" && detail != "Check paused." && detail != "Checking older pages for overlap."
+            && detail != "Page limit reached. The next check will continue here."
+            && detail != "Please wait ten seconds between listing requests."
+            && detail != "Source URL changed. Waiting for the next check."
+            && detail != "Starting batch saved. Older history was not imported."
+            && !detail.StartsWith("Hourly listing request limit reached. Next slot: ", StringComparison.Ordinal)
+            && !Regex.IsMatch(detail, @"\AInitial import: \d+ articles remaining\.\z");
+    }
+
     private string RenderCheckStatus(string source, int group, bool paused)
     {
         var html = new StringBuilder("<ul>");
@@ -688,7 +706,7 @@ internal sealed class Inbox : IDisposable
         foreach (var row in rows)
         {
             // The stored attempt still counts if Reddit returned an error; deferred checks do not change it.
-            html.Append("<li><b>").Append(E(row[0])).Append("</b> ");
+            html.Append(HasCheckWarning(row[1], row[2]) ? "<li><b class=check-warning>" : "<li><b>").Append(E(row[0])).Append("</b> ");
             DateTimeOffset attempted;
             if (DateTimeOffset.TryParseExact(row[3], "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out attempted))
             {
@@ -812,13 +830,15 @@ internal sealed class Inbox : IDisposable
     }
 
     private static string FeedLink(string source, string label, string selected, bool unread, long count, bool oldest, int group, int selectedGroup,
-        ArticleFilter dates, bool openDiscussion = false, bool hasIcon = false)
+        ArticleFilter dates, bool openDiscussion = false, bool hasIcon = false, bool warning = false)
     {
         var icon = hasIcon ? "<img class=feed-site-icon alt='' loading=lazy width=16 height=16 src='/feed-icon?feed=" + E(source) + "'>" : "";
         var link = "<a class='feed" + (source == "" && group > 0 ? " group-link" : "") + (IsRssKey(source) ? " rss-feed" : "")
+            + (warning ? " has-check-warning" : "")
             + "' href='" + E(ViewUrl(source, unread, oldest, group, dates)) + "' data-feed='" + E(source) + "' data-group='" + group + "'"
             + (source == "" ? " draggable=false" : " draggable=true")
             + (openDiscussion ? " data-open-discussion=1" : "")
+            + (warning ? " aria-description='Check status has a warning'" : "")
             + (source == "" && group > 0 && group == selectedGroup ? " data-active-group" : "")
             + (source == selected && group == selectedGroup ? " aria-current=page" : "") + "><span class=feed-label>" + icon + E(label)
             + "</span><span class=count>" + count.ToString(CultureInfo.InvariantCulture) + "</span></a>";
