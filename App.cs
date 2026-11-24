@@ -38,6 +38,10 @@ internal sealed class App : Form
             if (!owned) { MessageBox.Show("feedbox is already running."); return; }
             try
             {
+                // The legacy compiler targets .NET Framework defaults that include obsolete TLS protocols.
+                // Let Windows choose TLS before the RSS HTTP client is initialized.
+                AppContext.SetSwitch("Switch.System.Net.DontEnableSystemDefaultTlsVersions", false);
+                AppContext.SetSwitch("Switch.System.Net.DontEnableSchUseStrongCrypto", false);
                 var config = AppConfig.Load(AppDomain.CurrentDomain.BaseDirectory, args);
                 using (var store = new Store(config.Database))
                 using (var window = new App(store, config.Profile, config.Port)) Application.Run(window);
