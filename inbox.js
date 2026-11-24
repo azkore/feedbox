@@ -8,6 +8,7 @@
     let busy = false;
     let navigation;
     let displayedUrl = location.href;
+    let feedNavigationOrder = null;
     let readRevision = 0;
     let readerTail = 0;
     const rows = () => Array.from(entries.querySelectorAll('article[data-post]'));
@@ -344,6 +345,8 @@
         status = main.querySelector('#key-status');
         header.querySelector('.check-status').open = statusOpen;
         selected = null;
+        // Preserve the keyboard position across receipts for the same feed and filters.
+        if (readingKey(url) !== readingKey(displayedUrl)) feedNavigationOrder = null;
         displayedUrl = url;
         applyFeedSort();
         restoreGroups();
@@ -909,6 +912,19 @@
         return [...nav.querySelectorAll(selector)];
     }
 
+    const feedNavigationKey = link => `${link.dataset.group}:${link.dataset.feed}`;
+    const hasMatchingArticles = link => Number(link.querySelector('.count').textContent) > 0;
+
+    function rememberFeedNavigationOrder() {
+        if (feedNavigationOrder || feedSort.value === 'name' || document.body.dataset.unread === '0') return;
+        const links = activeFeedLinks().filter(link => link.dataset.feed);
+        const current = links.find(link => link.getAttribute('aria-current') === 'page');
+        // Remember the position where reading started, before its falling count moves the feed down.
+        if (current && hasMatchingArticles(current)) {
+            feedNavigationOrder = { current: feedNavigationKey(current), keys: links.map(feedNavigationKey) };
+        }
+    }
+
     function sortFeedRows(section, more) {
         const order = [...section.querySelectorAll(':scope > .feed-row')];
         if (!originalFeedOrder.has(section)) originalFeedOrder.set(section, new Map(order.map((row, i) => [row, i])));
@@ -959,6 +975,7 @@
             more.textContent = expanded ? 'Show fewer feeds' : `${zeroUnread} more ${zeroUnread === 1 ? 'feed' : 'feeds'}`;
         }
         syncSidebarPins();
+        rememberFeedNavigationOrder();
     }
 
     showAll.closest('label').hidden = false;
@@ -968,6 +985,7 @@
     updateMoreFeeds();
     showAll.addEventListener('change', () => {
         closeFeedMenu();
+        feedNavigationOrder = null;
         try { localStorage.setItem(showAllKey, showAll.checked ? '1' : '0'); } catch { /* Use the choice for this tab. */ }
         applyFeedSort();
         restoreGroups();
@@ -976,6 +994,7 @@
     });
     feedSort.addEventListener('change', () => {
         closeFeedMenu();
+        feedNavigationOrder = null;
         try { localStorage.setItem(feedSortKey, feedSort.value); } catch { /* Use the choice for this tab. */ }
         applyFeedSort();
         updateMoreFeeds();
@@ -1050,8 +1069,19 @@
 
     function moveFeed(direction) {
         // Keyboard feed switching follows visible sidebar entries.
-        const all = activeFeedLinks().filter(link => link.dataset.feed);
-        const current = all.findIndex(link => link.getAttribute('aria-current') === 'page');
+        let all = activeFeedLinks().filter(link => link.dataset.feed);
+        let current = all.findIndex(link => link.getAttribute('aria-current') === 'page');
+        const unread = document.body.dataset.unread !== '0';
+        if (current >= 0 && unread && feedSort.value !== 'name' && !hasMatchingArticles(all[current])) {
+            // A drained feed is sorted below the unread feeds. Resume from its former position,
+            // resolving the saved order against current links so hidden and removed targets are skipped.
+            const key = feedNavigationKey(all[current]);
+            if (feedNavigationOrder?.current === key) {
+                const live = new Map(all.map(link => [feedNavigationKey(link), link]));
+                all = feedNavigationOrder.keys.map(key => live.get(key)).filter(Boolean);
+                current = all.findIndex(link => feedNavigationKey(link) === key);
+            } else current = -1; // A feed already empty when opened has no former unread position.
+        }
         const folder = flatFeedSort() ? null : nav.querySelector('.group-link[aria-current=page]');
         const groupFeeds = folder ? all.filter(link => link.dataset.group === folder.dataset.group) : [];
         const groupStart = direction > 0 ? groupFeeds[0] : groupFeeds.at(-1);
@@ -1059,7 +1089,7 @@
         // In Unread, skip sources with no unread posts. View all also makes read-only feeds reachable.
         while (index >= 0 && index < all.length) {
             const link = all[index];
-            if (!link.closest('[hidden]') && (document.body.dataset.unread === '0' || Number(link.querySelector('.count').textContent) > 0)) {
+            if (!link.closest('[hidden]') && (!unread || hasMatchingArticles(link))) {
                 navigate(link.href);
                 return;
             }
