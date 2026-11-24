@@ -693,7 +693,9 @@
         const view = entries;
         try {
             if (action === '/read') {
-                await setRead(form.closest('article[data-post]'), fields.get('mark') !== 'unread');
+                const row = form.closest('article[data-post]');
+                if (fields.get('mark') === 'unread') await setRead(row, false);
+                else await readAndAdvance(row);
             } else {
                 if (action === '/import-opml') {
                     const file = form.elements['opml-file'].files[0];
@@ -1131,6 +1133,25 @@
         updateArticleState(row, read, row.dataset.marked === '1');
     }
 
+    async function readAndAdvance(row) {
+        // Both forward actions load the next page if needed and wait for the read to save.
+        status.textContent = '';
+        const articles = rows();
+        const index = articles.indexOf(row);
+        const more = document.querySelector('#more');
+        if (!articles[index + 1] && more) await loadMore(more);
+        if (!row.isConnected || navigation) return;
+        await setRead(row, true);
+        if (!row.isConnected || navigation) return;
+
+        const next = rows()[index + 1];
+        if (next) select(next);
+        else {
+            status.textContent = 'End of this feed.';
+            alignArticle(row);
+        }
+    }
+
     function inView(read, marked) {
         const flags = Number(document.body.dataset.flags);
         return Boolean((flags & (read ? 2 : 1)) && (flags & (marked ? 8 : 4)));
@@ -1337,22 +1358,11 @@
             return;
         }
         if (!current) return;
-        const index = articles.indexOf(current);
-        if (key === 'k') { select(articles[index - 1]); return; }
+        if (key === 'k') { select(articles[articles.indexOf(current) - 1]); return; }
 
         busy = true;
         try {
-            const more = document.querySelector('#more');
-            if (!articles[index + 1] && more) await loadMore(more);
-            if (!current.isConnected || navigation) return;
-            await setRead(current, true);
-            if (!current.isConnected || navigation) return;
-            const next = rows()[index + 1];
-            if (next) select(next);
-            else {
-                status.textContent = 'End of this feed.';
-                alignArticle(current);
-            }
+            await readAndAdvance(current);
         } catch (error) {
             status.textContent = error.message;
         } finally {
