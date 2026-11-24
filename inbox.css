@@ -43,6 +43,7 @@ aside { position: fixed; inset: 0 auto 0 0; width: var(--sidebar-width); backgro
 aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 6px 7px; }
 /* Keep the shortcuts in one sticky block so the rules frame them together. */
 .feed-pins { position: sticky; top: 0; z-index: 1; background: var(--nav); border-block: 1px solid var(--rule); }
+.show-all-label:not([hidden]) { display: flex; align-items: center; gap: 6px; padding: 10px 12px 0; }
 .feed-sort-label:not([hidden]) { display: grid; gap: 5px; padding: 10px 12px; }
 .feed-sort { width: 100%; min-width: 0; font: inherit; }
 .feed { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 32px; padding: 4px 10px; border-radius: 5px; color: var(--ink); text-decoration: none; font-size: 13px; }

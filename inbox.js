@@ -727,16 +727,18 @@
     }
 
     function restoreGroups() {
-        // Keep the selected feed visible when entering it from a bookmark or shortcut.
+        // Show all overrides saved collapses temporarily. Otherwise keep a selected feed visible.
         for (const toggle of nav.querySelectorAll('.group-toggle')) {
             const id = toggle.getAttribute('aria-controls');
-            showGroup(toggle, !collapsed.has(id) || Boolean(document.getElementById(id).querySelector('[aria-current=page]')));
+            toggle.disabled = showAll.checked;
+            showGroup(toggle, showAll.checked || !collapsed.has(id) || Boolean(document.getElementById(id).querySelector('[aria-current=page]')));
         }
     }
-    restoreGroups();
 
     const sidebarTools = document.querySelector('.sidebar-tools');
     const feedSort = sidebarTools.querySelector('.feed-sort');
+    const showAll = sidebarTools.querySelector('.show-all-feeds');
+    const showAllKey = 'feedbox.show-all-feeds';
     // Close the options panel on outside clicks or Escape, without changing the reading view.
     document.addEventListener('click', event => {
         if (sidebarTools.open && !sidebarTools.contains(event.target)) sidebarTools.open = false;
@@ -752,10 +754,14 @@
     try {
         const mode = localStorage.getItem(feedSortKey);
         if (['name', 'group-count', 'all-count'].includes(mode)) feedSort.value = mode;
+        showAll.checked = localStorage.getItem(showAllKey) === '1';
     } catch { /* Sorting still works when browser storage is unavailable. */ }
 
+    // Show all needs groups even if the usual view is flat. Keep the saved sort for when it is unchecked.
+    const flatFeedSort = () => !showAll.checked && feedSort.value === 'all-count';
+
     function applyFeedSort() {
-        const flat = feedSort.value === 'all-count';
+        const flat = flatFeedSort();
         for (const section of nav.querySelectorAll(':scope > .feed-section-label, #ungrouped-feeds')) section.hidden = flat;
         const existing = nav.querySelector('#flat-feeds');
         if (!flat) { existing?.remove(); return; }
@@ -791,7 +797,7 @@
 
     function activeFeedLinks() {
         // Both lists receive badge updates, but only the displayed list drives navigation.
-        const selector = feedSort.value === 'all-count' ? '.feed-pins > a.feed, #flat-feeds a.feed' : 'a.feed[data-feed]';
+        const selector = flatFeedSort() ? '.feed-pins > a.feed, #flat-feeds a.feed' : 'a.feed[data-feed]';
         return [...nav.querySelectorAll(selector)];
     }
 
@@ -819,10 +825,10 @@
 
     const expandedMoreFeeds = new Set();
     function updateMoreFeeds() {
-        // Hide empty group headings using the same filtered counts shown beside them.
-        const flat = feedSort.value === 'all-count';
+        // Show all affects sidebar visibility only; the badges still reflect the current article filters.
+        const flat = flatFeedSort();
         for (const group of nav.querySelectorAll(':scope > .feed-group')) {
-            group.hidden = flat || Number(group.querySelector('.group-link .count').textContent) === 0;
+            group.hidden = flat || (!showAll.checked && Number(group.querySelector('.group-link .count').textContent) === 0);
         }
         for (const section of nav.querySelectorAll('.group-members, .ungrouped-feeds')) {
             if (flat !== (section.id === 'flat-feeds')) continue;
@@ -833,20 +839,30 @@
             for (const link of section.querySelectorAll('.feed[data-feed]')) {
                 // Apply the same zero-unread rule to the current feed as to every other feed.
                 const tuckAway = Number(link.querySelector('.count').textContent) === 0;
-                link.hidden = tuckAway && !expanded;
+                link.hidden = tuckAway && !expanded && !showAll.checked;
                 if (link.parentElement.classList.contains('feed-row')) link.parentElement.hidden = link.hidden;
                 if (tuckAway) zeroUnread++;
             }
-            more.hidden = zeroUnread === 0;
+            more.hidden = showAll.checked || zeroUnread === 0;
             more.setAttribute('aria-expanded', String(expanded && zeroUnread > 0));
             more.textContent = expanded ? 'Show fewer feeds' : `${zeroUnread} more ${zeroUnread === 1 ? 'feed' : 'feeds'}`;
         }
         syncSidebarPins();
     }
 
+    showAll.closest('label').hidden = false;
     feedSort.closest('label').hidden = false;
     applyFeedSort();
+    restoreGroups();
     updateMoreFeeds();
+    showAll.addEventListener('change', () => {
+        closeFeedMenu();
+        try { localStorage.setItem(showAllKey, showAll.checked ? '1' : '0'); } catch { /* Use the choice for this tab. */ }
+        applyFeedSort();
+        restoreGroups();
+        updateMoreFeeds();
+        revealCurrentFeed();
+    });
     feedSort.addEventListener('change', () => {
         closeFeedMenu();
         try { localStorage.setItem(feedSortKey, feedSort.value); } catch { /* Use the choice for this tab. */ }
@@ -919,7 +935,7 @@
         // Keyboard feed switching follows visible sidebar entries.
         const all = activeFeedLinks().filter(link => link.dataset.feed);
         const current = all.findIndex(link => link.getAttribute('aria-current') === 'page');
-        const folder = feedSort.value === 'all-count' ? null : nav.querySelector('.group-link[aria-current=page]');
+        const folder = flatFeedSort() ? null : nav.querySelector('.group-link[aria-current=page]');
         const groupFeeds = folder ? all.filter(link => link.dataset.group === folder.dataset.group) : [];
         const groupStart = direction > 0 ? groupFeeds[0] : groupFeeds.at(-1);
         let index = current >= 0 ? current + direction : groupStart ? all.indexOf(groupStart) : direction > 0 ? 0 : all.length - 1;

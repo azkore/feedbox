@@ -560,6 +560,7 @@ internal sealed class Inbox : IDisposable
         // Keep management controls in a disclosure so opening them doesn't resize the feed list.
         html.Append("<div class=sidebar-header><strong class=brand>feed(in)box</strong><details class=sidebar-tools>")
             .Append("<summary aria-label='Sidebar options' title='Sidebar options'>&#x22EF;</summary><div class=sidebar-tools-panel>")
+            .Append("<label class=show-all-label hidden><input class=show-all-feeds type=checkbox> Show all</label>")
             .Append("<label class=feed-sort-label hidden>Sort feeds<select class=feed-sort><option value=name>Grouped: by name</option><option value=group-count>Grouped: by count</option><option value=all-count>All feeds: by count</option></select></label>");
         html.Append("<details class=add-source><summary>Add source or group</summary>");
         html.Append(Form("source", "<label>Subreddit <input name=name required maxlength=23 placeholder='r/rss'></label>"
