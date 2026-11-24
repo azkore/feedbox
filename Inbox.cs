@@ -330,7 +330,7 @@ internal sealed class Inbox : IDisposable
                     if (!store.SetRead(id, form["mark"] != "unread"))
                     {
                         if (store.PublishedAt(id) == "") Reply(context, 404, "This article is no longer in the inbox.");
-                        else Reply(context, 409, "This article is marked. Use Numpad + or open it with V to mark it read.");
+                        else Reply(context, 409, "This article is marked. Press B or open it with V to mark it read.");
                         return;
                     }
                     if (form["inline"] == "1") { context.Response.StatusCode = 204; return; }

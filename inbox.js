@@ -1206,7 +1206,7 @@
     }
 
     async function toggleArticleMark(row) {
-        // The bookmark and Numpad + share the same write and advance rules.
+        // The bookmark and B share the same write and advance rules.
         status.textContent = '';
         busy = true;
         try {
@@ -1324,7 +1324,7 @@
         if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.ctrlKey || event.metaKey
             || event.target.closest?.('input,textarea,select,[contenteditable=true],.feed-editor,.feed-menu')) return;
         const key = event.key.toLowerCase();
-        const mark = event.code === 'NumpadAdd';
+        const mark = key === 'b' && !event.shiftKey;
         if ((!mark && !['j', 'k', 'v'].includes(key)) || (key === 'v' && event.shiftKey)) return;
         event.preventDefault();
         if (busy || navigation) return;
