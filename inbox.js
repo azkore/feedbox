@@ -317,6 +317,7 @@
         nav.replaceChildren(...nextNav.children);
         panels.forEach((panel, i) => panel.replaceChildren(...nextPanels[i].children));
         main.replaceChildren(...nextMain.children);
+        syncReaderEdges();
         setReaderTail(0);
         document.body.dataset.unread = page.body.dataset.unread;
         document.body.dataset.flags = page.body.dataset.flags;
@@ -684,6 +685,67 @@
         finally { if (button) button.disabled = false; busy = false; }
     });
 
+    const readerInsetKey = 'feedbox.reader-inset';
+    let preferredInset = 22;
+    try {
+        const saved = Number(localStorage.getItem(readerInsetKey));
+        if (Number.isFinite(saved) && saved >= 8) preferredInset = saved;
+    } catch { /* The card edges still work when browser storage is unavailable. */ }
+    let readerInset = preferredInset;
+    let readerInsetMax = preferredInset;
+    let edgeDrag;
+
+    function syncReaderEdges() {
+        for (const handle of main.querySelectorAll('.reader-resize')) {
+            handle.setAttribute('aria-valuenow', readerInset);
+            handle.setAttribute('aria-valuemax', readerInsetMax);
+        }
+    }
+
+    function setReaderInset(inset, save = false) {
+        // Allow narrow columns while leaving some usable text width after all four gaps.
+        const sidebar = parseFloat(getComputedStyle(main).getPropertyValue('--reader-sidebar'));
+        const pane = document.documentElement.clientWidth - sidebar;
+        const minimumText = Math.min(180, pane / 2);
+        readerInsetMax = Math.max(8, Math.floor((pane - minimumText) / 4));
+        readerInset = Math.round(Math.min(readerInsetMax, Math.max(8, inset)));
+        main.style.setProperty('--reader-inset', `${readerInset}px`);
+        syncReaderEdges();
+        if (save) {
+            preferredInset = readerInset;
+            try { localStorage.setItem(readerInsetKey, String(readerInset)); } catch { /* Keep the current inset. */ }
+        }
+    }
+
+    // Keep dragging when the pointer leaves the edge or the reading view is replaced.
+    main.addEventListener('pointerdown', event => {
+        const edge = event.target.closest('.reader-resize');
+        if (!edge || event.button !== 0 || edgeDrag) return;
+        event.preventDefault();
+        edgeDrag = { pointer: event.pointerId, x: event.clientX, inset: readerInset, direction: edge.dataset.edge === 'left' ? 1 : -1 };
+        main.setPointerCapture(event.pointerId);
+        document.body.classList.add('resizing-reader');
+    });
+    const moveReaderEdge = (event, save = false) => {
+        if (edgeDrag?.pointer !== event.pointerId) return;
+        setReaderInset(edgeDrag.inset + (event.clientX - edgeDrag.x) * edgeDrag.direction, save);
+    };
+    main.addEventListener('pointermove', moveReaderEdge);
+    main.addEventListener('pointerup', event => moveReaderEdge(event, true));
+    main.addEventListener('lostpointercapture', event => {
+        if (edgeDrag?.pointer !== event.pointerId) return;
+        edgeDrag = null;
+        document.body.classList.remove('resizing-reader');
+        setReaderInset(preferredInset);
+    });
+    main.addEventListener('keydown', event => {
+        const edge = event.target.closest('.reader-resize');
+        if (!edge || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        const movingRight = event.key === 'ArrowRight';
+        setReaderInset(readerInset + (movingRight === (edge.dataset.edge === 'left') ? 4 : -4), true);
+    });
+
     const splitter = document.querySelector('.sidebar-resize');
     const widthKey = 'feedbox.sidebar-width';
     const maxWidth = () => Math.max(160, Math.min(560, innerWidth - 330));
@@ -698,6 +760,7 @@
         document.documentElement.style.setProperty('--sidebar-width', `${actual}px`);
         splitter.setAttribute('aria-valuenow', actual);
         splitter.setAttribute('aria-valuemax', maxWidth());
+        setReaderInset(preferredInset);
         if (save) {
             preferred = actual;
             try { localStorage.setItem(widthKey, String(actual)); } catch { /* Keep the current width. */ }

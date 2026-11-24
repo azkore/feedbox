@@ -515,6 +515,11 @@ internal sealed class Inbox : IDisposable
             if (deletedCount > 0) html.Append(query["compact"] == "0" ? " SQLite could not finish compacting the file." : " Database compacted.");
             html.Append("</p>");
         }
+        // Keep the drag targets with the cards so the controls above them keep their own width.
+        html.Append("<div class=reader-cards>");
+        foreach (var edge in new[] { "left", "right" })
+            html.Append("<div class=reader-resize data-edge='").Append(edge).Append("' role=separator aria-orientation=vertical aria-label='")
+                .Append(edge == "left" ? "Left" : "Right").Append(" card edge' aria-controls=entries aria-valuemin=8 aria-valuenow=22 tabindex=0 title='Drag to resize cards'></div>");
         html.Append("<div id=entries data-arrival='").Append(arrival.ToString(CultureInfo.InvariantCulture)).Append("'>");
 
         // Use the original URL supplied by the collector. Opening it does not mark the post read.
@@ -535,7 +540,7 @@ internal sealed class Inbox : IDisposable
             var url = ViewUrl(source, unread, oldest, group, dates) + "&before=" + Uri.EscapeDataString(last[4]) + "&id=" + Uri.EscapeDataString(last[0]);
             html.Append("<a id=more href='").Append(E(url)).Append("'>More posts</a>");
         }
-        html.Append(FeedOptions(source, unread, oldest, group, dates, groups));
+        html.Append("</div>").Append(FeedOptions(source, unread, oldest, group, dates, groups));
         return html.Append("</main></body></html>").ToString();
     }
 
