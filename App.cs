@@ -185,7 +185,7 @@ internal sealed class App : Form
     {
         public readonly string Type;
         public readonly string[] Feeds;
-        public int Checked, Failed;
+        public int Checked, Failed, Skipped;
         public string Detail;
 
         public CheckProgress(string type, string[] feeds) { Type = type; Feeds = feeds; }
@@ -193,6 +193,7 @@ internal sealed class App : Form
         public string Describe()
         {
             return Type + ": " + Checked + "/" + Feeds.Length + " checked" + (Failed == 0 ? "" : ", " + Failed + " failed")
+                + (Skipped == 0 ? "" : ", " + Skipped + " skipped")
                 + (Detail == null ? "." : ". " + Detail);
         }
     }
@@ -200,9 +201,10 @@ internal sealed class App : Form
     private bool StartAllChecks(bool includeRss, bool includeReddit)
     {
         if (exiting || allCheckStatus.Running || store.IsPaused) return false;
-        // Take a snapshot of subscriptions, regardless of the next scheduled check time.
-        var rssBatch = includeRss ? new CheckProgress("RSS", store.RssSubscriptions().Select(row => row[0]).ToArray()) : null;
-        var redditBatch = includeReddit ? new CheckProgress("Reddit", store.Sources().Select(source => source.Name).ToArray()) : null;
+        // Check enabled subscriptions regardless of their next scheduled check time.
+        var paused = store.PausedFeeds();
+        var rssBatch = includeRss ? new CheckProgress("RSS", store.RssSubscriptions().Select(row => row[0]).Where(name => !paused.Contains(name)).ToArray()) : null;
+        var redditBatch = includeReddit ? new CheckProgress("Reddit", store.Sources().Select(source => source.Name).Where(name => !paused.Contains(name)).ToArray()) : null;
         checkingAllRss = rssBatch != null;
         checkingAllReddit = redditBatch != null;
         RunAllChecks(rssBatch, redditBatch);
@@ -220,7 +222,7 @@ internal sealed class App : Form
             // Return the HTTP acknowledgement before starting checks; Reddit and RSS can progress independently.
             await Task.Yield();
             await Task.WhenAll(RunFeedBatch(rssBatch, false, report), RunFeedBatch(redditBatch, true, report));
-            var stopped = !exiting && store.IsPaused && batches.Any(batch => batch.Checked < batch.Feeds.Length);
+            var stopped = !exiting && store.IsPaused && batches.Any(batch => batch.Checked + batch.Skipped < batch.Feeds.Length);
             allCheckStatus = new FeedCheckStatus(false, (stopped ? "Collection paused. " : "") + describe());
         }
         catch (Exception)
@@ -238,13 +240,14 @@ internal sealed class App : Form
             foreach (var feed in batch.Feeds)
             {
                 if (exiting || store.IsPaused) return;
-                if (!store.HasSource(feed)) continue;
+                if (!store.HasSource(feed)) { batch.Skipped++; report(); continue; }
                 if (reddit)
                 {
                     // Wait for a request slot without bypassing the shared budget or a rate-limit cooldown.
                     while (true)
                     {
                         if (exiting || store.IsPaused) return;
+                        if (store.IsFeedPaused(feed)) break;
                         if (!ready || Visible || needsSignIn)
                         {
                             batch.Detail = Visible ? "Close the Reddit sign-in window before checking." : "The Reddit collector is not ready.";
@@ -258,9 +261,13 @@ internal sealed class App : Form
                     }
                 }
                 batch.Detail = null;
-                var outcome = reddit ? await Check(true, feed) : await CheckRss(feed);
-                batch.Checked++;
-                if (outcome != "No new posts found." && !outcome.StartsWith("Added ", StringComparison.Ordinal)) batch.Failed++;
+                var outcome = reddit ? await Check(true, feed, batch: true) : await CheckRss(feed, batch: true);
+                if (outcome == "Check paused.") batch.Skipped++;
+                else
+                {
+                    batch.Checked++;
+                    if (outcome != "No new posts found." && !outcome.StartsWith("Added ", StringComparison.Ordinal)) batch.Failed++;
+                }
                 report();
             }
         }
@@ -273,9 +280,11 @@ internal sealed class App : Form
         }
     }
 
-    private async Task<string> CheckRss(string name = null)
+    private async Task<string> CheckRss(string name = null, bool batch = false)
     {
         if (exiting || (name == null && (store.IsPaused || checkingAllRss))) return "";
+        // A bulk check must respect pauses even after waiting for another RSS request.
+        if (batch && (store.IsPaused || store.IsFeedPaused(name))) return "Check paused.";
         if (rssCheck != null && !rssCheck.IsCompleted)
         {
             // A just-added feed can be picked up by the timer before its manual check starts.
@@ -285,7 +294,7 @@ internal sealed class App : Form
             // A manual check after an edit must use the new URL rather than reuse an older result.
             bool sameFeed = requested != null && requested.FeedUrl == rssFeed.FeedUrl;
             var result = await rssCheck;
-            return sameFeed ? result : await CheckRss(name);
+            return sameFeed ? result : await CheckRss(name, batch);
         }
         var source = store.RssToCheck(name);
         if (source == null) return "";
@@ -304,10 +313,12 @@ internal sealed class App : Form
         }
     }
 
-    private async Task<string> Check(bool manual, string feed = null)
+    private async Task<string> Check(bool manual, string feed = null, bool batch = false)
     {
         // Only an explicit single-feed request can run while scheduled collection is paused.
         bool single = manual && feed != null;
+        bool overridePause = single && !batch;
+        if (batch && (store.IsPaused || store.IsFeedPaused(feed))) return "Check paused.";
         if (!single && checkingAllReddit) return "A check of all Reddit feeds is already running.";
         if (!ready || running || Visible || exiting || (!single && store.IsPaused) || (needsSignIn && !manual))
         {
@@ -330,9 +341,10 @@ internal sealed class App : Form
             }
             foreach (var source in sources)
             {
-                if (exiting || (!single && store.IsPaused)) break;
+                if (exiting) break;
+                if (!overridePause && (store.IsPaused || store.IsFeedPaused(source.Name))) return "Check paused.";
                 store.RecordAttempt(source.Name);
-                var result = await collector.Check(view.CoreWebView2, source, single && store.IsPaused);
+                var result = await collector.Check(view.CoreWebView2, source, overridePause);
                 if (result.auth)
                 {
                     foreach (var pending in sources.SkipWhile(s => s != source).Skip(1)) store.Note(pending.Name, result.problem);

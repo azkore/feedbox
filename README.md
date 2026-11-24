@@ -6,7 +6,7 @@ Run `build.ps1` from Windows PowerShell to build and test the app on 64-bit Wind
 
 1. Open feedbox from the notification area and choose **Open Reddit to sign in**. Sign into Reddit there, then click **Hide and check**.
 2. Choose **Open inbox**, use **Add source** in the sidebar, and click **Check now**. **Check status** shows the result for each source.
-3. Leave the app running in the tray to check feeds. **Pause collection** and **Resume collection** apply to all feeds. Open Reddit again if the app reports a sign-in problem.
+3. Leave the app running in the tray to check feeds. The pause button controls the current feed in a feed view and all feeds in All feeds or a group view. Paused feeds still support **Check this feed**. Open Reddit again if the app reports a sign-in problem.
 
 Use **J** to select a post, then press **J** again to mark that post read and move forward. **K** moves back, **Shift+J/K** switches feeds, and **V** opens the selected original in a new tab. Opening a post does not mark it read.
 

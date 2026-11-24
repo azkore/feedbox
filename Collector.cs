@@ -46,7 +46,8 @@ internal sealed class Collector
         {
             if (!store.HasSource(state.Name)) return new PageResult { Added = added };
             // A pause takes effect before the next request; the preceding page is already committed.
-            if (!allowWhilePaused && store.IsPaused) return Finish(state, new PageResult(), added, "Check paused.");
+            if (!allowWhilePaused && (store.IsPaused || store.IsFeedPaused(state.Name)))
+                return Finish(state, new PageResult(), added, "Check paused.");
             // Resume a partial walk at its committed continuation, or start at New.
             var first = state.Cursor == "";
             var path = first ? NewListingPath(state) : state.Cursor;

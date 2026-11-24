@@ -106,6 +106,18 @@ internal static class Tests
                         && !store.IsPaused, "one inbox control resumes collection globally");
                     Expect(Request(server.Url + "collection", "POST", server.Url.TrimEnd('/'), "token=" + token + "&action=pause", out ignored) == 303
                         && store.IsPaused && store.Count(true) == 1, "pausing collection leaves reading state unchanged");
+                    // The same toolbar route targets one subscription when the reader is in a feed.
+                    var collection = server.Url + "collection";
+                    var scope = "token=" + token + "&feed=rss&action=";
+                    Expect(Request(collection, "POST", server.Url.TrimEnd('/'), scope + "pause", out ignored) == 303
+                        && store.IsPaused && store.IsFeedPaused("rss") && store.Sources(dueOnly: true).Count == 0 && store.Sources().Count == 1,
+                        "a paused Reddit feed remains readable and manually checkable but leaves the schedule");
+                    Expect(Request(server.Url + "?feed=rss", "GET", null, null, out html) == 200 && html.Contains("Resume this feed")
+                        && html.Contains("class='feed feed-paused'") && html.Contains("<h1 class=feed-paused>"), "individual pause is visible in the selected feed and sidebar");
+                    Expect(Request(collection, "POST", server.Url.TrimEnd('/'), "token=" + token + "&feed=missing&action=resume", out ignored) == 404
+                        && store.IsPaused, "a stale feed cannot resume global collection");
+                    Expect(Request(collection, "POST", server.Url.TrimEnd('/'), scope + "resume", out ignored) == 303
+                        && store.IsPaused && !store.IsFeedPaused("rss"), "resuming a single feed does not resume collection globally");
                 }
 
                 // Marking rows on a page must not shift unseen rows out of the next page.
@@ -562,6 +574,10 @@ internal static class Tests
                     var posts = RssCollector.Parse(body, url, key, out title);
                      Expect(posts.Count == 1 && title == "RSS fixture" && posts[0].body == "A & B" && posts[0].originalUrl == "https://example.com/review"
                          && posts[0].discussion == "https://example.com/discussion", "RSS retains searchable text and the discussion destination");
+                    // RSS scheduling skips individual pauses; an explicit check can still find the feed.
+                    Expect(store.SetFeedPaused(key, true) && store.RssToCheck() == null && store.RssToCheck(key) != null
+                        && store.PausedFeeds().SetEquals(new[] { key }), "paused RSS remains manually checkable but leaves the schedule");
+                    Expect(store.SetFeedPaused(key, false), "an RSS feed can be resumed independently");
                     Expect(store.Sources().Count == 0 && store.RssToCheck().Name == key, "RSS is due on its own schedule, outside the Reddit collector");
                     store.RecordAttempt(key);
                     Expect(store.RssToCheck() == null && store.RssToCheck(key).FeedUrl == url.AbsoluteUri, "RSS is deferred after an attempt but remains manually checkable");

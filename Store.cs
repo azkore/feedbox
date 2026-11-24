@@ -113,7 +113,7 @@ internal sealed class Store : IDisposable
         Check(sqlite3_busy_timeout(db, 5000));
         Run("PRAGMA journal_mode=WAL");
         var version = int.Parse(Query("PRAGMA user_version")[0][0], CultureInfo.InvariantCulture);
-        if (version < 0 || version > 15) throw new InvalidOperationException("Unsupported database version.");
+        if (version < 0 || version > 16) throw new InvalidOperationException("Unsupported database version.");
         Transaction(() =>
         {
             Run(@"CREATE TABLE IF NOT EXISTS sources (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1,
@@ -219,13 +219,19 @@ internal sealed class Store : IDisposable
                 Run("ALTER TABLE sources ADD COLUMN reddit_initial_ids TEXT NOT NULL DEFAULT ''");
                 Run("PRAGMA user_version=15");
             }
+            if (version < 16)
+            {
+                // Individual pauses start unset; the existing global setting remains authoritative.
+                Run("ALTER TABLE sources ADD COLUMN feed_paused INTEGER NOT NULL DEFAULT 0");
+                Run("PRAGMA user_version=16");
+            }
         });
     }
 
     public List<Source> Sources(int limit = -1, bool dueOnly = false)
     {
         // Revisit quiet feeds less often; unfinished walks remain eligible at the busy-feed interval.
-        var due = dueOnly ? @" AND (last_attempt='' OR julianday(last_attempt) <= julianday('now') -
+        var due = dueOnly ? @" AND feed_paused=0 AND (last_attempt='' OR julianday(last_attempt) <= julianday('now') -
             CASE WHEN cursor<>'' OR reddit_initial_remaining>=0 OR EXISTS (SELECT 1 FROM posts WHERE source=sources.name AND published >= strftime('%Y-%m-%dT%H:%M:%S','now','-1 day'))
             THEN 2.0/24 ELSE 12.0/24 END)" : "";
         return Query("SELECT name,anchors,cursor,head,seen,extra,status,label,reddit_floor,reddit_initial_remaining,reddit_initial_ids FROM sources WHERE kind='reddit'" + due + " ORDER BY last_attempt,name LIMIT ?", limit.ToString(CultureInfo.InvariantCulture))
@@ -318,7 +324,7 @@ internal sealed class Store : IDisposable
     {
         // Manual checks target an exact key. Scheduled checks rotate through feeds due once an hour.
         var rows = name == null
-            ? Query(@"SELECT name,label,feed_url FROM sources WHERE kind='rss'
+            ? Query(@"SELECT name,label,feed_url FROM sources WHERE kind='rss' AND feed_paused=0
                 AND (last_attempt='' OR julianday(last_attempt) <= julianday('now') - 1.0/24) ORDER BY last_attempt,name LIMIT 1")
             : Query("SELECT name,label,feed_url FROM sources WHERE kind='rss' AND name=?", name);
         return rows.Count == 0 ? null : new Source { Name = rows[0][0], Label = rows[0][1], FeedUrl = rows[0][2] };
@@ -461,6 +467,28 @@ internal sealed class Store : IDisposable
     public void SetPaused(bool paused)
     {
         Run("UPDATE settings SET value=? WHERE key='collection_paused'", paused ? "1" : "0");
+    }
+
+    public bool SetFeedPaused(string name, bool paused)
+    {
+        // Change only the feed's eligibility, leaving its schedule, checkpoint and archive intact.
+        bool found = false;
+        Transaction(() =>
+        {
+            Run("UPDATE sources SET feed_paused=? WHERE name=?", paused ? "1" : "0", name);
+            found = Query("SELECT changes()")[0][0] == "1";
+        });
+        return found;
+    }
+
+    public bool IsFeedPaused(string name)
+    {
+        return Query("SELECT 1 FROM sources WHERE name=? AND feed_paused=1", name).Count != 0;
+    }
+
+    public HashSet<string> PausedFeeds()
+    {
+        return new HashSet<string>(Query("SELECT name FROM sources WHERE feed_paused=1").Select(row => row[0]));
     }
 
     public void AddSource(string name, int group = 0, int initialCount = 100, string since = "")
@@ -718,7 +746,7 @@ internal sealed class Store : IDisposable
     public List<string[]> CheckStatuses(string source, int group)
     {
         // Refresh collector status without querying or re-rendering the reading queue.
-        return Query(@"SELECT COALESCE(NULLIF(custom_label,''),label),status,coverage_note,last_attempt FROM sources s
+        return Query(@"SELECT COALESCE(NULLIF(custom_label,''),label),status,coverage_note,last_attempt,feed_paused FROM sources s
             WHERE (?1='' OR name=?1) AND (CAST(?2 AS INTEGER)=0 OR EXISTS
                 (SELECT 1 FROM feed_group_members m WHERE m.group_id=CAST(?2 AS INTEGER) AND m.source=s.name))
             ORDER BY name", source, group.ToString(CultureInfo.InvariantCulture));

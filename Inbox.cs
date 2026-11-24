@@ -103,7 +103,8 @@ internal sealed class Inbox : IDisposable
                 var json = new System.Web.Script.Serialization.JavaScriptSerializer();
                 var archive = query["feed"] == null ? null : ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]));
                 Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival(), archive,
-                    icons = store.Icons.Available(), warnings = store.FeedCheckHealth().Where(row => HasCheckWarning(row[1], row[2])).Select(row => row[0]).ToArray() }),
+                     icons = store.Icons.Available(), pausedFeeds = store.PausedFeeds().ToArray(),
+                     warnings = store.FeedCheckHealth().Where(row => HasCheckWarning(row[1], row[2])).Select(row => row[0]).ToArray() }),
                     "application/json; charset=utf-8");
                 return;
             }
@@ -288,8 +289,17 @@ internal sealed class Inbox : IDisposable
                     break;
                 case "/collection":
                     if (form["action"] != "pause" && form["action"] != "resume") { Reply(context, 400, "Choose pause or resume."); return; }
-                    store.SetPaused(form["action"] == "pause");
-                    if (!store.IsPaused) check(null);
+                    var pause = form["action"] == "pause";
+                    // Only an empty feed field selects the global setting. A stale feed cannot change it.
+                    if (!string.IsNullOrEmpty(form["feed"]))
+                    {
+                        if (!store.SetFeedPaused(SourceName(form["feed"]), pause)) { Reply(context, 404, "This feed is no longer subscribed."); return; }
+                    }
+                    else
+                    {
+                        store.SetPaused(pause);
+                        if (!pause) check(null);
+                    }
                     break;
                 case "/read":
                     var id = form["id"] ?? "";
@@ -409,6 +419,7 @@ internal sealed class Inbox : IDisposable
         var counts = store.UnreadCounts(dates);
         Func<string, long> countFor = name => counts.ContainsKey(name) ? counts[name] : 0;
         var byName = sources.ToDictionary(s => s[0]);
+        var pausedFeeds = store.PausedFeeds();
         var icons = store.Icons.Available();
         var groups = store.Groups();
         var selectedGroup = groups.Find(g => g.Id == group);
@@ -440,7 +451,7 @@ internal sealed class Inbox : IDisposable
             {
                 grouped.Add(member[0]);
                 html.Append(FeedLink(member[0], member[3], source, unread, countFor(member[0]), oldest, folder.Id, group, dates, member[5] == "1",
-                    icons.Contains(member[0]), HasCheckWarning(member[1], member[4])));
+                     icons.Contains(member[0]), HasCheckWarning(member[1], member[4]), pausedFeeds.Contains(member[0])));
             }
             // Keep all member links in alphabetical order when the reader reveals the zero-unread feeds.
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div></section>");
@@ -451,13 +462,14 @@ internal sealed class Inbox : IDisposable
             if (groups.Count > 0) html.Append("<div class=feed-section-label>Ungrouped</div>");
             html.Append("<div class=ungrouped-feeds id=ungrouped-feeds>");
             foreach (var s in ungrouped) html.Append(FeedLink(s[0], s[3], source, unread, countFor(s[0]), oldest, 0, group, dates, s[5] == "1",
-                icons.Contains(s[0]), HasCheckWarning(s[1], s[4])));
+                 icons.Contains(s[0]), HasCheckWarning(s[1], s[4]), pausedFeeds.Contains(s[0])));
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div>");
         }
         if (groups.Count > 0) html.Append("<div hidden>").Append(Form("move-feed", "", unread, source, oldest, group, dates)).Append("</div>");
         html.Append("</nav><div id=sidebar-count-tip role=tooltip hidden></div><div class=sidebar-resize role=separator aria-label='Feed sidebar width' aria-orientation=vertical aria-valuemin=160 aria-valuemax=560 aria-valuenow=272 tabindex=0></div></aside>");
 
-        html.Append("<main><header class=feed-header><div class=heading><div class=heading-title><h1>").Append(E(title)).Append("</h1> ");
+        html.Append("<main><header class=feed-header><div class=heading><div class=heading-title><h1")
+            .Append(pausedFeeds.Contains(source) ? " class=feed-paused" : "").Append('>').Append(E(title)).Append("</h1> ");
         AppendHeadingCounts(html, source, group);
         html.Append("</div><div class=toolbar>");
         html.Append(StateControl(source, oldest, group, dates));
@@ -465,8 +477,14 @@ internal sealed class Inbox : IDisposable
             .Append(oldest ? "newest first'>Oldest first" : "oldest first'>Newest first").Append("</a>");
         html.Append(DateControl(source, unread, oldest, group, dates));
         html.Append(SearchControl(source, unread, oldest, group, dates));
-        html.Append(Form("collection", paused ? IconButton("&#x25B6;&#xFE0E;", "Resume collection", " name=action value=resume")
-            : IconButton("&#x23F8;&#xFE0E;", "Pause collection", " name=action value=pause"), unread, source, oldest, group, dates));
+        // Aggregate views use the global switch; a subscribed feed uses only its own switch.
+        if (source == "" || byName.ContainsKey(source))
+        {
+            var contextPaused = source == "" ? paused : pausedFeeds.Contains(source);
+            var scope = source == "" ? " collection" : " this feed";
+            html.Append(Form("collection", contextPaused ? IconButton("&#x25B6;&#xFE0E;", "Resume" + scope, " name=action value=resume")
+                 : IconButton("&#x23F8;&#xFE0E;", "Pause" + scope, " name=action value=pause"), unread, source, oldest, group, dates));
+        }
         if (byName.ContainsKey(source))
         {
             html.Append(Form("check-feed", IconButton("&#x21BB;", "Check this feed"), unread, source, oldest, group, dates));
@@ -718,7 +736,8 @@ internal sealed class Inbox : IDisposable
         foreach (var row in rows)
         {
             // The stored attempt still counts if Reddit returned an error; deferred checks do not change it.
-            html.Append(HasCheckWarning(row[1], row[2]) ? "<li><b class=check-warning>" : "<li><b>").Append(E(row[0])).Append("</b> ");
+            html.Append(row[4] == "1" ? "<li><b class=feed-paused>" : HasCheckWarning(row[1], row[2]) ? "<li><b class=check-warning>" : "<li><b>").Append(E(row[0])).Append("</b> ");
+            if (row[4] == "1") html.Append("<span class=check-age>Feed paused. </span>");
             DateTimeOffset attempted;
             if (DateTimeOffset.TryParseExact(row[3], "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out attempted))
             {
@@ -842,15 +861,15 @@ internal sealed class Inbox : IDisposable
     }
 
     private static string FeedLink(string source, string label, string selected, bool unread, long count, bool oldest, int group, int selectedGroup,
-        ArticleFilter dates, bool openDiscussion = false, bool hasIcon = false, bool warning = false)
+        ArticleFilter dates, bool openDiscussion = false, bool hasIcon = false, bool warning = false, bool paused = false)
     {
         var icon = hasIcon ? "<img class=feed-site-icon alt='' loading=lazy width=16 height=16 src='/feed-icon?feed=" + E(source) + "'>" : "";
         var link = "<a class='feed" + (source == "" && group > 0 ? " group-link" : "") + (IsRssKey(source) ? " rss-feed" : "")
-            + (warning ? " has-check-warning" : "")
+             + (warning ? " has-check-warning" : "") + (paused ? " feed-paused" : "")
             + "' href='" + E(ViewUrl(source, unread, oldest, group, dates)) + "' data-feed='" + E(source) + "' data-group='" + group + "'"
             + (source == "" ? " draggable=false" : " draggable=true")
             + (openDiscussion ? " data-open-discussion=1" : "")
-            + (warning ? " aria-description='Check status has a warning'" : "")
+             + (paused ? " aria-description='Feed paused'" : warning ? " aria-description='Check status has a warning'" : "")
             + (source == "" && group > 0 && group == selectedGroup ? " data-active-group" : "")
             + (source == selected && group == selectedGroup ? " aria-current=page" : "") + "><span class=feed-label>" + icon + E(label)
             + "</span><span class=count>" + count.ToString(CultureInfo.InvariantCulture) + "</span></a>";

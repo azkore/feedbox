@@ -181,19 +181,20 @@
             for (const bound of ['from', 'to', 'q']) if (filter.has(bound)) url.searchParams.set(bound, filter.get(bound));
             const response = await fetch(url);
             if (!response.ok) return;
-            const { feeds, total, arrival, archive, icons, warnings } = await response.json();
+            const { feeds, total, arrival, archive, icons, warnings, pausedFeeds } = await response.json();
             // Discard a snapshot taken before a newer read action or view change.
             if (busy || navigation || entries !== view || readRevision !== revision) return;
             if (archive) updateHeadingCounts(archive);
             const unread = name => Object.hasOwn(feeds, name) ? feeds[name] : 0;
             const availableIcons = new Set(icons || []);
             const feedWarnings = new Set(warnings || []);
+            const paused = new Set(pausedFeeds || []);
             for (const link of nav.querySelectorAll('.feed[data-feed]')) {
                 let count = total;
                 if (link.dataset.feed) {
                     count = unread(link.dataset.feed);
                     if (availableIcons.has(link.dataset.feed)) addFeedIcon(link, link.dataset.feed);
-                    setCheckWarning(link, feedWarnings.has(link.dataset.feed));
+                    setFeedCheckState(link, feedWarnings.has(link.dataset.feed), paused.has(link.dataset.feed));
                 }
                 else if (link.dataset.group !== '0') {
                     // Sum this group's feeds only; the global total counts each post once.
@@ -208,10 +209,12 @@
         finally { countsPending = false; }
     }
 
-    function setCheckWarning(link, warning) {
-        // Keep the visual cue and the accessible description in sync after a check.
+    function setFeedCheckState(link, warning, paused) {
+        // Paused names stay gray even if a previous check failed.
         link.classList.toggle('has-check-warning', warning);
-        if (warning) link.setAttribute('aria-description', 'Check status has a warning');
+        link.classList.toggle('feed-paused', paused);
+        if (paused) link.setAttribute('aria-description', 'Feed paused');
+        else if (warning) link.setAttribute('aria-description', 'Check status has a warning');
         else link.removeAttribute('aria-description');
     }
 
@@ -667,7 +670,8 @@
                     // Keep the original bytes so the XML parser can honor the file's encoding.
                     fields.set('opml', btoa(binary));
                 }
-                const response = await fetch(form.action, { method: 'POST', body: fields });
+                // Named controls can shadow form.action; use the route read from the attribute.
+                const response = await fetch(action, { method: 'POST', body: fields });
                 const page = await pageFrom(response);
                 if (entries === view && !navigation) {
                     const nextUrl = new URL(response.url);
@@ -1323,7 +1327,7 @@
         const count = link.querySelector('.count').textContent;
         const badge = shortcut.querySelector('.count');
         if (badge.textContent !== count) badge.textContent = count;
-        setCheckWarning(shortcut, link.classList.contains('has-check-warning'));
+        setFeedCheckState(shortcut, link.classList.contains('has-check-warning'), link.classList.contains('feed-paused'));
         // An icon may arrive after the shortcut was first cloned.
         if (link.dataset.feed && link.querySelector('.feed-site-icon:not([hidden])')) addFeedIcon(shortcut, link.dataset.feed);
     }

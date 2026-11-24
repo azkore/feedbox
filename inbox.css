@@ -51,6 +51,7 @@ aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain
 .feed { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 32px; padding: 4px 10px; border-radius: 5px; color: var(--ink); text-decoration: none; font-size: 13px; }
 .feed-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed.has-check-warning .feed-label, .check-warning { color: var(--check-warning); }
+.feed.feed-paused .feed-label, .feed-paused { color: var(--muted); }
 .feed:is([data-feed]:not([data-feed='']), [data-pinned-feed]) .feed-label::before { content: 'r/'; display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 9px; background: #d33d14; color: white; font: 700 10px/16px system-ui, sans-serif; text-align: center; }
 .feed.rss-feed:is([data-feed], [data-pinned-feed]) .feed-label::before { content: '◔'; background: #bc5914; }
 .feed .feed-label:has(.feed-site-icon:not([hidden]))::before { display: none; }
