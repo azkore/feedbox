@@ -610,8 +610,26 @@ internal static class Tests
                  {
                      var item = RssCollector.Parse(body, url, Store.RssKey("other"), out title).Single();
                      Expect(item.originalUrl == "https://example.com/article" && item.discussion == "https://example.com/replies"
-                         && item.content == null && item.body == "literal <b> text", "Atom uses HTML replies for discussions and preserves literal plain text");
-                 }
+                          && item.content == null && item.body == "literal <b> text", "Atom uses HTML replies for discussions and preserves literal plain text");
+                  }
+                // Slashdot publishes both formats; changing formats should not change an article's identity.
+                const string rdf = "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' xmlns:dc='http://purl.org/dc/elements/1.1/' xmlns='";
+                const string channel = "'><channel><title>RDF fixture</title><link>/</link></channel><image><url>/icon.png</url></image>";
+                const string entry = "<item><title>RDF article</title><link>/article</link>";
+                var rss1 = rdf + "http://purl.org/rss/1.0/" + channel + entry
+                    + "<description><![CDATA[<b>Summary</b>]]></description><dc:creator>Editor</dc:creator><dc:date>2026-11-22T20:00:00Z</dc:date></item></rdf:RDF>";
+                var rss09 = rdf + "http://my.netscape.com/rdf/simple/0.9/" + channel + entry + "</item></rdf:RDF>";
+                Uri icon, site;
+                Post dated, undated;
+                using (var body = new MemoryStream(Encoding.UTF8.GetBytes(rss1)))
+                    dated = RssCollector.Parse(body, url, key, out title, out icon, out site).Single();
+                Expect(title == "RDF fixture" && site.AbsoluteUri == "https://example.com/" && icon.AbsoluteUri == "https://example.com/icon.png"
+                    && dated.publicationKnown && dated.created == "2026-11-22T20:00:00.0000000+00:00" && dated.author == "Editor"
+                    && dated.body == "Summary" && dated.content == "<b>Summary</b>", "RSS 1.0 reads sibling items and image, Dublin Core metadata, and article HTML");
+                using (var body = new MemoryStream(Encoding.UTF8.GetBytes(rss09)))
+                    undated = RssCollector.Parse(body, url, key, out title).Single();
+                Expect(undated.id == dated.id && undated.originalUrl == "https://example.com/article" && !undated.publicationKnown,
+                    "RSS 0.90 collects undated items with the same link-based identity as RSS 1.0");
                 try
                 {
                     using (var body = new MemoryStream(Encoding.UTF8.GetBytes("<!DOCTYPE rss [<!ENTITY sample 'x'>]><rss><channel><title>&sample;</title></channel></rss>")))

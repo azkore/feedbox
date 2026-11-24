@@ -92,48 +92,55 @@ internal sealed class RssCollector : IDisposable
             doc = XDocument.Load(reader);
         var root = doc.Root;
         bool atom = root.Name == XName.Get("feed", "http://www.w3.org/2005/Atom");
-        var channel = atom ? root : root.Name.LocalName == "rss" ? root.Element("channel") : null;
+        bool rdf = root.Name == XName.Get("RDF", "http://www.w3.org/1999/02/22-rdf-syntax-ns#");
+        XNamespace rss1 = "http://purl.org/rss/1.0/";
+        XNamespace rss09 = "http://my.netscape.com/rdf/simple/0.9/";
+        XNamespace dc = "http://purl.org/dc/elements/1.1/";
+        // RDF-based RSS uses a namespaced channel with items and images beside it.
+        var channel = atom ? root : rdf ? root.Element(rss1 + "channel") ?? root.Element(rss09 + "channel")
+            : root.Name.LocalName == "rss" ? root.Element("channel") : null;
         if (channel == null) throw new InvalidDataException("The response is not an RSS or Atom feed.");
         var ns = channel.Name.Namespace;
         title = Text(Value(channel, ns + "title"), 120);
         // Feed-level metadata describes the publisher, independently of the individual article links.
-        var image = atom ? Value(channel, ns + "icon") : Value(channel.Element("image"), "url");
+        var image = atom ? Value(channel, ns + "icon") : Value((rdf ? root : channel).Element(ns + "image"), ns + "url");
         if (atom && image == "") image = Value(channel, ns + "logo");
         var homepage = atom ? channel.Elements(ns + "link").Where(e => (string)e.Attribute("rel") == null || (string)e.Attribute("rel") == "alternate")
-            .Select(e => (string)e.Attribute("href")).FirstOrDefault() : Value(channel, "link");
+            .Select(e => (string)e.Attribute("href")).FirstOrDefault() : Value(channel, ns + "link");
         icon = MetadataUrl(origin, image);
         site = MetadataUrl(origin, homepage);
         var posts = new Dictionary<string, Post>();
         var now = DateTimeOffset.UtcNow;
-        var entries = channel.Elements(ns + (atom ? "entry" : "item"));
+        var entries = (rdf ? root : channel).Elements(ns + (atom ? "entry" : "item"));
         foreach (var entry in entries)
         {
             // Atom can advertise several links; use only the human-facing alternate link.
             string link = atom ? entry.Elements(ns + "link")
                 .Where(e => (string)e.Attribute("rel") == null || (string)e.Attribute("rel") == "alternate")
-                .Select(e => (string)e.Attribute("href")).FirstOrDefault() : Value(entry, "link");
+                .Select(e => (string)e.Attribute("href")).FirstOrDefault() : Value(entry, ns + "link");
             Uri original;
             if (!Uri.TryCreate(origin, link, out original) || string.IsNullOrWhiteSpace(link) || !IsHttp(original)) continue;
             var externalId = Value(entry, ns + (atom ? "id" : "guid"));
             var id = Store.RssKey(source + "\n" + (externalId == "" ? original.AbsoluteUri : externalId));
             if (posts.ContainsKey(id)) continue;
-            var publication = atom ? Value(entry, ns + "published") : Value(entry, "pubDate");
+            // RDF feeds use the Dublin Core date; older feeds may have no date at all.
+            var publication = atom ? Value(entry, ns + "published") : rdf ? Value(entry, dc + "date") : Value(entry, ns + "pubDate");
             var published = publication == "" && atom ? Value(entry, ns + "updated") : publication;
             DateTimeOffset created;
             bool hasDate = DateTimeOffset.TryParse(published, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out created);
             if (!hasDate) created = now;
             var heading = Text(Value(entry, ns + "title"), 300);
             var content = atom ? entry.Element(ns + "content") ?? entry.Element(ns + "summary")
-                : entry.Element(XName.Get("encoded", "http://purl.org/rss/1.0/modules/content/")) ?? entry.Element("description");
+                : entry.Element(XName.Get("encoded", "http://purl.org/rss/1.0/modules/content/")) ?? entry.Element(ns + "description");
             var author = atom ? Value(entry.Element(ns + "author"), ns + "name")
-                : Value(entry, XName.Get("creator", "http://purl.org/dc/elements/1.1/"));
+                : Value(entry, dc + "creator");
             // Keep the publisher's article HTML separately from the searchable text.
             var payload = content == null ? "" : content.HasElements ? string.Concat(content.Nodes()) : content.Value;
             var contentType = content == null ? "" : (string)content.Attribute("type");
             var html = !atom || contentType == "html" || contentType == "xhtml";
             var comments = atom ? entry.Elements(ns + "link").Where(e => (string)e.Attribute("rel") == "replies"
                     && ((string)e.Attribute("type") ?? "text/html") == "text/html").Select(e => (string)e.Attribute("href")).FirstOrDefault()
-                : Value(entry, "comments");
+                : Value(entry, ns + "comments");
             Uri discussion = null;
             bool hasDiscussion = !string.IsNullOrWhiteSpace(comments) && Uri.TryCreate(origin, comments, out discussion) && IsHttp(discussion);
             posts.Add(id, new Post { id = id, title = heading == "" ? original.AbsoluteUri : heading,
