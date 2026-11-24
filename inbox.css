@@ -172,6 +172,8 @@ article[data-read='0'] .article-actions { display: none; }
 .context hr { border: 0; border-top: 1px solid var(--rule); }
 .context .continued { color: var(--muted); }
 .preview:not([hidden]) { display: block; margin: 16px 0 0; max-width: 100%; width: auto; height: auto; max-height: 42rem; object-fit: contain; border-radius: 3px; }
+/* Keep publisher previews near reading-column width, even on wide or tall screens. */
+.preview.publisher-preview { max-width: min(100%, 580px); max-height: 400px; }
 #more { display: inline-block; margin-top: 12px; }
 
 @media (max-width: 760px) {

@@ -1003,7 +1003,7 @@
             const url = new URL(await response.text());
             if (!row.isConnected || row.querySelector('img.preview') || !['https:', 'http:'].includes(url.protocol)) return;
             const image = document.createElement('img');
-            image.className = 'preview';
+            image.className = 'preview publisher-preview';
             image.alt = 'Publisher preview';
             image.referrerPolicy = 'no-referrer';
             image.loading = 'lazy';
