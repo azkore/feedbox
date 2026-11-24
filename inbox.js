@@ -756,7 +756,7 @@
 
     function applyFeedSort() {
         const flat = feedSort.value === 'all-count';
-        for (const group of nav.querySelectorAll(':scope > .feed-group, :scope > .feed-section-label, #ungrouped-feeds')) group.hidden = flat;
+        for (const section of nav.querySelectorAll(':scope > .feed-section-label, #ungrouped-feeds')) section.hidden = flat;
         const existing = nav.querySelector('#flat-feeds');
         if (!flat) { existing?.remove(); return; }
         if (existing) return;
@@ -819,8 +819,13 @@
 
     const expandedMoreFeeds = new Set();
     function updateMoreFeeds() {
+        // Hide empty group headings using the same filtered counts shown beside them.
+        const flat = feedSort.value === 'all-count';
+        for (const group of nav.querySelectorAll(':scope > .feed-group')) {
+            group.hidden = flat || Number(group.querySelector('.group-link .count').textContent) === 0;
+        }
         for (const section of nav.querySelectorAll('.group-members, .ungrouped-feeds')) {
-            if ((feedSort.value === 'all-count') !== (section.id === 'flat-feeds')) continue;
+            if (flat !== (section.id === 'flat-feeds')) continue;
             const more = section.querySelector('.more-feeds');
             sortFeedRows(section, more);
             const expanded = expandedMoreFeeds.has(section.id);
@@ -1183,7 +1188,7 @@
 
     function syncSidebarPins() {
         const view = new URL(displayedUrl);
-        const group = feedSort.value === 'all-count' ? null : nav.querySelector('.feed-group .group-link[data-active-group]');
+        const group = nav.querySelector('.feed-group:not([hidden]) .group-link[data-active-group]');
         const source = view.searchParams.get('feed');
         const links = source ? activeFeedLinks().filter(link => link.dataset.feed === source) : [];
         const selected = links.find(link => link.getAttribute('aria-current') === 'page');
