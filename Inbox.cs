@@ -487,7 +487,9 @@ internal sealed class Inbox : IDisposable
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div>");
         }
         if (groups.Count > 0) html.Append("<div hidden>").Append(Form("move-feed", "", unread, source, oldest, group, dates)).Append("</div>");
-        html.Append("</nav><div id=sidebar-count-tip role=tooltip hidden></div><div class=sidebar-resize role=separator aria-label='Feed sidebar width' aria-orientation=vertical aria-valuemin=160 aria-valuemax=560 aria-valuenow=272 tabindex=0></div></aside>");
+        html.Append("</nav><div class=sidebar-resize role=separator aria-label='Feed sidebar width' aria-orientation=vertical aria-valuemin=160 aria-valuemax=560 aria-valuenow=272 tabindex=0></div></aside>");
+        // Keep the tooltip outside the sidebar's stacking context so reader edges cannot cover it.
+        html.Append("<div id=sidebar-count-tip role=tooltip hidden></div>");
 
         html.Append("<main><header class=feed-header><div class=heading><div class=heading-title><h1")
             .Append(pausedFeeds.Contains(source) ? " class=feed-paused" : "").Append('>').Append(E(title)).Append("</h1> ");
