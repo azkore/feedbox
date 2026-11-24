@@ -31,7 +31,7 @@ $flags += '/resource:' + (Join-Path $PSScriptRoot 'inbox.css') + ',inbox.css'
 foreach ($asset in @('InterVariable.woff2','Merriweather-Regular.ttf','Inter-OFL.txt','Merriweather-OFL.txt')) {
     $flags += '/resource:' + (Join-Path $PSScriptRoot "fonts\$asset") + ',' + $asset
 }
-$shared = @('AppConfig.cs', 'Store.cs', 'Collector.cs', 'RssCollector.cs', 'Inbox.cs', 'ArticleBody.cs', 'Opml.cs', 'PublisherPreview.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$shared = @('AppConfig.cs', 'Store.cs', 'Collector.cs', 'RssCollector.cs', 'Inbox.cs', 'ArticleBody.cs', 'Opml.cs', 'PublisherPreview.cs', 'FeedIcons.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 
 # Use the compiler already supplied by .NET Framework; no system-wide SDK or service is installed.
 & $compiler @flags '/target:winexe' ('/out:' + (Join-Path $out 'feedbox.exe')) @shared (Join-Path $PSScriptRoot 'App.cs')

@@ -49,6 +49,9 @@ aside nav { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain
 .feed-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed:is([data-feed]:not([data-feed='']), [data-pinned-feed]) .feed-label::before { content: 'r/'; display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 9px; background: #d33d14; color: white; font: 700 10px/16px system-ui, sans-serif; text-align: center; }
 .feed.rss-feed:is([data-feed], [data-pinned-feed]) .feed-label::before { content: '◔'; background: #bc5914; }
+.feed .feed-label:has(.feed-site-icon:not([hidden]))::before { display: none; }
+.feed-site-icon { margin-right: 9px; object-fit: contain; vertical-align: -3px; }
+.feed-site-icon[hidden] { display: none; }
 .feed:hover { background: var(--active); }
 .feed[aria-current=page], .feed[data-active-group], .feed-pins .feed { background: var(--current-feed); }
 .feed[aria-current=page] { font-weight: 650; }

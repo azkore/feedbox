@@ -156,6 +156,7 @@ internal static class Tests
             TestCheckAllTypes();
             TestRss();
             TestEditRssSource();
+            TestFeedIcons();
             TestPublisherPreview();
             TestAppConfig();
             TestReadingTools();
@@ -215,6 +216,53 @@ internal static class Tests
             }
         }
         finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix); }
+    }
+
+    private static void TestFeedIcons()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            var origin = new Uri("https://example.org/feeds/news.xml");
+            Uri icon, site;
+            string title;
+            const string rss = "<rss><channel><title>Example</title><link>/news/</link><image><url>badge.png</url></image></channel></rss>";
+            using (var input = new MemoryStream(Encoding.UTF8.GetBytes(rss)))
+                RssCollector.Parse(input, origin, "fixture", out title, out icon, out site);
+            Expect(icon.AbsoluteUri == "https://example.org/feeds/badge.png" && site.AbsoluteUri == "https://example.org/news/",
+                "RSS icon metadata resolves against the feed response URL");
+            const string atom = "<feed xmlns='http://www.w3.org/2005/Atom'><link rel='self' href='/feed'/><link href='/blog/'/><icon>/atom.png</icon><logo>/logo.png</logo></feed>";
+            using (var input = new MemoryStream(Encoding.UTF8.GetBytes(atom)))
+                RssCollector.Parse(input, origin, "fixture", out title, out icon, out site);
+            Expect(icon.AbsolutePath == "/atom.png" && site.AbsolutePath == "/blog/", "Atom prefers its icon and uses the publisher link");
+
+            // A local icon serves raster data for the subscription, while missing and unrelated keys fall back.
+            using (var store = new Store(path))
+            using (var inbox = new Inbox(store, 55000 + new Random().Next(5000), name => System.Threading.Tasks.Task.FromResult("")))
+            using (var source = new System.Drawing.Bitmap(128, 64))
+            using (var data = new MemoryStream())
+            {
+                var key = store.AddRss(origin, 0);
+                source.Save(data, System.Drawing.Imaging.ImageFormat.Png);
+                Directory.CreateDirectory(path + ".icons");
+                using (var result = FeedIcons.Rasterize(data.ToArray()))
+                {
+                    Expect(result.Width == 64 && result.Height == 32 && FeedIcons.Rasterize(Encoding.UTF8.GetBytes("<svg/>")) == null,
+                        "feed icons preserve proportions and reject markup");
+                    result.Save(Path.Combine(path + ".icons", key + ".png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
+                string html;
+                Expect(Request(inbox.Url, "GET", null, null, out html) == 200 && html.Contains("/feed-icon?feed=" + key)
+                    && Request(inbox.Url + "feed-icon?feed=" + key, "GET", null, null, out html) == 200
+                    && Request(inbox.Url + "feed-icon?feed=unknown", "GET", null, null, out html) == 404,
+                    "the sidebar uses saved icons on a local URL and tolerates missing assets");
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(path + ".icons")) Directory.Delete(path + ".icons", true);
+            foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix);
+        }
     }
 
     private static void TestPublisherPreview()

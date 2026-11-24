@@ -102,7 +102,16 @@ internal sealed class Inbox : IDisposable
                 var counts = store.UnreadCounts(dates);
                 var json = new System.Web.Script.Serialization.JavaScriptSerializer();
                 var archive = query["feed"] == null ? null : ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]));
-                Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival(), archive }), "application/json; charset=utf-8");
+                Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival(), archive,
+                    icons = store.Icons.Available() }), "application/json; charset=utf-8");
+                return;
+            }
+            if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/feed-icon")
+            {
+                var sourceKey = SourceName(query["feed"]);
+                var icon = sourceKey != "" && store.HasSource(sourceKey) ? store.Icons.Read(sourceKey) : null;
+                if (icon == null) { Reply(context, 404, "No feed icon."); return; }
+                ReplyBytes(context, 200, icon, "image/png", cacheSeconds: 86400);
                 return;
             }
             if (request.HttpMethod == "GET" && request.Url.AbsolutePath == "/sidebar-counts")
@@ -399,6 +408,7 @@ internal sealed class Inbox : IDisposable
         var counts = store.UnreadCounts(dates);
         Func<string, long> countFor = name => counts.ContainsKey(name) ? counts[name] : 0;
         var byName = sources.ToDictionary(s => s[0]);
+        var icons = store.Icons.Available();
         var groups = store.Groups();
         var selectedGroup = groups.Find(g => g.Id == group);
         if (selectedGroup == null) group = 0;
@@ -428,7 +438,7 @@ internal sealed class Inbox : IDisposable
             foreach (var member in members)
             {
                 grouped.Add(member[0]);
-                html.Append(FeedLink(member[0], member[3], source, unread, countFor(member[0]), oldest, folder.Id, group, dates, member[5] == "1"));
+                html.Append(FeedLink(member[0], member[3], source, unread, countFor(member[0]), oldest, folder.Id, group, dates, member[5] == "1", icons.Contains(member[0])));
             }
             // Keep all member links in alphabetical order when the reader reveals the zero-unread feeds.
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div></section>");
@@ -438,7 +448,7 @@ internal sealed class Inbox : IDisposable
         {
             if (groups.Count > 0) html.Append("<div class=feed-section-label>Ungrouped</div>");
             html.Append("<div class=ungrouped-feeds id=ungrouped-feeds>");
-            foreach (var s in ungrouped) html.Append(FeedLink(s[0], s[3], source, unread, countFor(s[0]), oldest, 0, group, dates, s[5] == "1"));
+            foreach (var s in ungrouped) html.Append(FeedLink(s[0], s[3], source, unread, countFor(s[0]), oldest, 0, group, dates, s[5] == "1", icons.Contains(s[0])));
             html.Append("<button type=button class=more-feeds aria-expanded=false hidden></button></div>");
         }
         if (groups.Count > 0) html.Append("<div hidden>").Append(Form("move-feed", "", unread, source, oldest, group, dates)).Append("</div>");
@@ -800,14 +810,16 @@ internal sealed class Inbox : IDisposable
             + "><span aria-hidden=true>" + glyph + "</span></button>";
     }
 
-    private static string FeedLink(string source, string label, string selected, bool unread, long count, bool oldest, int group, int selectedGroup, ArticleFilter dates, bool openDiscussion = false)
+    private static string FeedLink(string source, string label, string selected, bool unread, long count, bool oldest, int group, int selectedGroup,
+        ArticleFilter dates, bool openDiscussion = false, bool hasIcon = false)
     {
+        var icon = hasIcon ? "<img class=feed-site-icon alt='' loading=lazy width=16 height=16 src='/feed-icon?feed=" + E(source) + "'>" : "";
         var link = "<a class='feed" + (source == "" && group > 0 ? " group-link" : "") + (IsRssKey(source) ? " rss-feed" : "")
             + "' href='" + E(ViewUrl(source, unread, oldest, group, dates)) + "' data-feed='" + E(source) + "' data-group='" + group + "'"
             + (source == "" ? " draggable=false" : " draggable=true")
             + (openDiscussion ? " data-open-discussion=1" : "")
             + (source == "" && group > 0 && group == selectedGroup ? " data-active-group" : "")
-            + (source == selected && group == selectedGroup ? " aria-current=page" : "") + "><span class=feed-label>" + E(label)
+            + (source == selected && group == selectedGroup ? " aria-current=page" : "") + "><span class=feed-label>" + icon + E(label)
             + "</span><span class=count>" + count.ToString(CultureInfo.InvariantCulture) + "</span></a>";
         if (source == "") return link;
         return "<div class=feed-row>" + link + "<button type=button class=feed-options aria-expanded=false aria-label='Options for "
@@ -861,18 +873,19 @@ internal sealed class Inbox : IDisposable
         ReplyBytes(context, code, Encoding.UTF8.GetBytes(body), contentType ?? (code == 200 ? "text/html; charset=utf-8" : "text/plain; charset=utf-8"));
     }
 
-    private static void ReplyBytes(HttpListenerContext context, int code, byte[] bytes, string contentType, bool rssFrame = false)
+    private static void ReplyBytes(HttpListenerContext context, int code, byte[] bytes, string contentType, bool rssFrame = false, int cacheSeconds = 0)
     {
         var response = context.Response;
         response.StatusCode = code;
         response.ContentType = contentType;
-        response.Headers["Cache-Control"] = "no-store";
+        // Let the sidebar reuse its saved icons across views. Reader data stays uncached.
+        response.Headers["Cache-Control"] = cacheSeconds > 0 ? "private, max-age=" + cacheSeconds.ToString(CultureInfo.InvariantCulture) : "no-store";
         // Preserve the Origin on same-origin form submissions without sending a referrer to Reddit.
         response.Headers["Referrer-Policy"] = rssFrame ? "no-referrer" : "same-origin";
         response.Headers["X-Content-Type-Options"] = "nosniff";
         response.Headers["Content-Security-Policy"] = rssFrame
             ? "default-src 'none'; style-src 'unsafe-inline' http: https:; img-src http: https: data:; font-src http: https: data:; media-src http: https: data:; base-uri http: https:; form-action 'none'; frame-ancestors 'self'; sandbox allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-            : "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src http: https:; frame-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+            : "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' http: https:; frame-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
         response.ContentLength64 = bytes.Length;
         response.OutputStream.Write(bytes, 0, bytes.Length);
     }

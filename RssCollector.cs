@@ -55,9 +55,16 @@ internal sealed class RssCollector : IDisposable
                     using (var data = await response.Content.ReadAsStreamAsync())
                     {
                         string title;
-                        var posts = Parse(data, response.RequestMessage.RequestUri, source.Name, out title);
+                        Uri icon, site;
+                        var origin = response.RequestMessage.RequestUri;
+                        var posts = Parse(data, origin, source.Name, out title, out icon, out site);
                         int added = store.SaveRss(source.Name, title, posts, source.FeedUrl);
                         if (added < 0) return changed;
+                        store.Icons.Discover(source.Name, icon, site ?? new Uri(origin, "/"), () =>
+                        {
+                            var current = store.RssToCheck(source.Name);
+                            return current != null && current.FeedUrl == source.FeedUrl;
+                        });
                         status = added == 0 ? "No new posts found." : "Added " + added + (added == 1 ? " new post." : " new posts.");
                     }
                 }
@@ -73,6 +80,12 @@ internal sealed class RssCollector : IDisposable
 
     internal static List<Post> Parse(Stream data, Uri origin, string source, out string title)
     {
+        Uri icon, site;
+        return Parse(data, origin, source, out title, out icon, out site);
+    }
+
+    internal static List<Post> Parse(Stream data, Uri origin, string source, out string title, out Uri icon, out Uri site)
+    {
         // Feed XML is untrusted. Parse its text without resolving entities or external files.
         XDocument doc;
         using (var reader = XmlReader.Create(data, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = MaxBytes }))
@@ -83,6 +96,13 @@ internal sealed class RssCollector : IDisposable
         if (channel == null) throw new InvalidDataException("The response is not an RSS or Atom feed.");
         var ns = channel.Name.Namespace;
         title = Text(Value(channel, ns + "title"), 120);
+        // Feed-level metadata describes the publisher, independently of the individual article links.
+        var image = atom ? Value(channel, ns + "icon") : Value(channel.Element("image"), "url");
+        if (atom && image == "") image = Value(channel, ns + "logo");
+        var homepage = atom ? channel.Elements(ns + "link").Where(e => (string)e.Attribute("rel") == null || (string)e.Attribute("rel") == "alternate")
+            .Select(e => (string)e.Attribute("href")).FirstOrDefault() : Value(channel, "link");
+        icon = MetadataUrl(origin, image);
+        site = MetadataUrl(origin, homepage);
         var posts = new Dictionary<string, Post>();
         var now = DateTimeOffset.UtcNow;
         var entries = channel.Elements(ns + (atom ? "entry" : "item"));
@@ -126,6 +146,12 @@ internal sealed class RssCollector : IDisposable
         }
         if (posts.Count == 0 && entries.Any()) throw new InvalidDataException("The RSS feed has entries but no readable article links.");
         return posts.Values.ToList();
+    }
+
+    private static Uri MetadataUrl(Uri origin, string value)
+    {
+        Uri uri;
+        return !string.IsNullOrWhiteSpace(value) && Uri.TryCreate(origin, value.Trim(), out uri) && IsHttp(uri) ? uri : null;
     }
 
     private static string Bounded(string value, int limit) { return value.Length > limit ? value.Substring(0, limit) : value; }

@@ -98,11 +98,13 @@ internal sealed class Store : IDisposable
     private static readonly SqlFunction ContainsFunction = ContainsText;
     private readonly object gate = new object();
     private readonly string databasePath;
+    public FeedIcons Icons { get; private set; }
     private IntPtr db;
 
     public Store(string path)
     {
         databasePath = path;
+        Icons = new FeedIcons(path + ".icons");
         Directory.CreateDirectory(Path.GetDirectoryName(path));
         Check(sqlite3_open_v2(Bytes(path), out db, 6, IntPtr.Zero));
         Check(sqlite3_create_function_v2(db, Bytes("inbox_contains"), 2, 1, IntPtr.Zero, ContainsFunction,

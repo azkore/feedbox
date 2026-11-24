@@ -2,5 +2,7 @@ build/
 profile/
 *.sqlite
 *.sqlite-*
+*.sqlite.icons/
 *.db
 *.db-*
+*.db.icons/

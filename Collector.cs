@@ -17,6 +17,7 @@ internal sealed class PageResult
     public bool auth { get; set; }
     public bool stale { get; set; }
     public int retry { get; set; }
+    public string icon { get; set; }
     internal int Added;
 }
 
@@ -59,6 +60,10 @@ internal sealed class Collector
                 if (result.stale) store.ResetWalk(state.Name, detail);
                 return Finish(state, result, added, detail);
             }
+            // Reuse the listing's avatar on the first check; no additional listing request is needed.
+            Uri icon;
+            if (Uri.TryCreate(result.icon, UriKind.Absolute, out icon) && icon.Scheme == Uri.UriSchemeHttps && icon.Host == "styles.redditmedia.com")
+                store.Icons.Discover(state.Name, icon, null, () => store.HasSource(state.Name));
 
             var oldCursor = state.Cursor;
             var walk = ProcessPage(state, result, first);

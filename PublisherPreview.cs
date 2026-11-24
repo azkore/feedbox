@@ -91,6 +91,84 @@ internal static class PublisherPreview
         return (await lookup).Where(IsPublic).OrderBy(ip => ip.AddressFamily == AddressFamily.InterNetwork ? 0 : 1).FirstOrDefault();
     }
 
+    internal static async Task<Uri> FindSiteIcon(Uri page)
+    {
+        for (int hop = 0; hop < 4; hop++)
+        {
+            var address = await ResolvePublic(page);
+            if (address == null) return null;
+            var response = await ReadHead(page, address);
+            if (response == null) return null;
+            if (response.Status >= 300 && response.Status < 400)
+            {
+                if (response.Location == null || !Uri.TryCreate(page, response.Location, out page)) return null;
+                continue;
+            }
+            // Prefer a declared icon over the conventional root favicon path.
+            if (response.Status == 200 && response.IsHtml)
+            {
+                foreach (Match tag in IconTags.Matches(response.Html))
+                {
+                    if (!tag.Value.StartsWith("<link", StringComparison.OrdinalIgnoreCase)) continue;
+                    string relation = "", href = "";
+                    foreach (Match attr in Attributes.Matches(tag.Value))
+                    {
+                        var value = WebUtility.HtmlDecode(attr.Groups.Cast<Group>().Skip(2).First(g => g.Success).Value).Trim();
+                        if (attr.Groups[1].Value.Equals("rel", StringComparison.OrdinalIgnoreCase)) relation = value.ToLowerInvariant();
+                        if (attr.Groups[1].Value.Equals("href", StringComparison.OrdinalIgnoreCase)) href = value;
+                    }
+                    Uri icon;
+                    if ((relation.Split(' ').Contains("icon") || relation == "apple-touch-icon") && href != ""
+                        && Uri.TryCreate(page, href, out icon) && IsWebUrl(icon)) return icon;
+                }
+            }
+            return new Uri(page, "/favicon.ico");
+        }
+        return null;
+    }
+
+    private static readonly Regex IconTags = new Regex(@"<!--.*?-->|<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>|<link\b(?:[^>""']|""[^""]*""|'[^']*')*>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline, TimeSpan.FromMilliseconds(150));
+
+    internal static async Task<byte[]> DownloadIcon(Uri uri)
+    {
+        const int max = 512 * 1024;
+        for (int hop = 0; hop < 4; hop++)
+        {
+            var address = await ResolvePublic(uri);
+            if (address == null) return null;
+            using (var proc = StartCurl(uri, address, " --include --max-filesize " + max))
+            {
+                if (proc == null) return null;
+                try
+                {
+                    using (var output = new MemoryStream())
+                    {
+                        // Account for headers separately from the maximum image size.
+                        var buffer = new byte[8192];
+                        var stream = proc.StandardOutput.BaseStream;
+                        int read;
+                        while ((read = await stream.ReadAsync(buffer, 0, buffer.Length)) != 0)
+                        {
+                            output.Write(buffer, 0, read);
+                            if (output.Length > max + 32768) return null;
+                        }
+                        var data = output.ToArray();
+                        int boundary = Encoding.ASCII.GetString(data, 0, Math.Min(data.Length, 32768)).IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                        if (boundary < 0) return null;
+                        var response = ParseHeaders(Encoding.ASCII.GetString(data, 0, boundary));
+                        if (response == null) return null;
+                        if (response.Status >= 300 && response.Status < 400 && response.Location != null && Uri.TryCreate(uri, response.Location, out uri)) continue;
+                        if (response.Status == 200 && data.Length - boundary - 4 <= max) return data.Skip(boundary + 4).ToArray();
+                        return null;
+                    }
+                }
+                finally { StopCurl(proc); }
+            }
+        }
+        return null;
+    }
+
     internal static bool IsPublic(IPAddress ip)
     {
         if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
@@ -116,7 +194,7 @@ internal static class PublisherPreview
         public bool IsHtml;
     }
 
-    private static async Task<PageHead> ReadHead(Uri uri, IPAddress address)
+    private static Process StartCurl(Uri uri, IPAddress address, string outputFlags)
     {
         // Windows curl can connect to the address we checked while preserving the hostname for HTTPS.
         var curl = Path.Combine(Environment.SystemDirectory, "curl.exe");
@@ -127,13 +205,25 @@ internal static class PublisherPreview
         var requestUri = uri.HostNameType == UriHostNameType.Dns ? new UriBuilder(uri) { Host = uri.IdnHost }.Uri : uri;
         var safeUrl = requestUri.AbsoluteUri.Replace("\"", "%22").Replace("\\", "%5C");
         var start = new ProcessStartInfo(curl,
-            "--disable --silent --globoff --noproxy \"*\" --proto \"=http,https\" --connect-timeout 3 --max-time 5 --compressed --include"
-            + pinned + " --url \"" + safeUrl + "\"")
+            "--disable --silent --globoff --noproxy \"*\" --proto \"=http,https\" --connect-timeout 3 --max-time 5 --compressed"
+            + outputFlags + pinned + " --url \"" + safeUrl + "\"")
         {
             UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true, StandardOutputEncoding = Encoding.UTF8
         };
-        using (var proc = Process.Start(start))
+        return Process.Start(start);
+    }
+
+    private static void StopCurl(Process process)
+    {
+        try { if (!process.HasExited) process.Kill(); }
+        catch (InvalidOperationException) { /* It can exit between the check and the kill. */ }
+    }
+
+    private static async Task<PageHead> ReadHead(Uri uri, IPAddress address)
+    {
+        using (var proc = StartCurl(uri, address, " --include"))
         {
+            if (proc == null) return null;
             try
             {
                 // Stop reading as soon as the head is available, without downloading the full article.
@@ -161,7 +251,7 @@ internal static class PublisherPreview
                 if (response != null) response.Html = text.ToString(bodyOffset, text.Length - bodyOffset);
                 return response;
             }
-            finally { if (!proc.HasExited) proc.Kill(); }
+            finally { StopCurl(proc); }
         }
     }
 

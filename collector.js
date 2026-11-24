@@ -84,5 +84,18 @@
             break;
         }
     }
-    return { posts: Array.from(entries.values()), next };
+    // Match the avatar to this community's ID, not a post author or recommendation.
+    let icon = '';
+    const header = first && doc.querySelector('shreddit-subreddit-header');
+    const community = header && header.getAttribute('subreddit-id');
+    if (community && header.getAttribute('name')?.toLowerCase() === source.toLowerCase()) {
+        for (const img of doc.querySelectorAll('img[src*="styles.redditmedia.com/"]')) {
+            try {
+                const candidate = new URL(img.getAttribute('src'), origin);
+                if (candidate.protocol === 'https:' && candidate.hostname === 'styles.redditmedia.com'
+                    && candidate.pathname.startsWith(`/${community}/styles/communityIcon`)) { icon = candidate.href; break; }
+            } catch { /* An unusable icon URL must not affect the listing. */ }
+        }
+    }
+    return { posts: Array.from(entries.values()), next, icon };
 })

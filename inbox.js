@@ -181,14 +181,18 @@
             for (const bound of ['from', 'to', 'q']) if (filter.has(bound)) url.searchParams.set(bound, filter.get(bound));
             const response = await fetch(url);
             if (!response.ok) return;
-            const { feeds, total, arrival, archive } = await response.json();
+            const { feeds, total, arrival, archive, icons } = await response.json();
             // Discard a snapshot taken before a newer read action or view change.
             if (busy || navigation || entries !== view || readRevision !== revision) return;
             if (archive) updateHeadingCounts(archive);
             const unread = name => Object.hasOwn(feeds, name) ? feeds[name] : 0;
+            const availableIcons = new Set(icons || []);
             for (const link of nav.querySelectorAll('.feed[data-feed]')) {
                 let count = total;
-                if (link.dataset.feed) count = unread(link.dataset.feed);
+                if (link.dataset.feed) {
+                    count = unread(link.dataset.feed);
+                    if (availableIcons.has(link.dataset.feed)) addFeedIcon(link, link.dataset.feed);
+                }
                 else if (link.dataset.group !== '0') {
                     // Sum this group's feeds only; the global total counts each post once.
                     const members = link.closest('.feed-group').querySelectorAll('.group-members .feed[data-feed]');
@@ -201,6 +205,23 @@
         } catch { /* Preserve the current badges if the local app cannot be reached. */ }
         finally { countsPending = false; }
     }
+
+    function addFeedIcon(link, key) {
+        const label = link.querySelector('.feed-label');
+        if (label.querySelector('.feed-site-icon')) return;
+        const icon = document.createElement('img');
+        icon.className = 'feed-site-icon';
+        icon.alt = '';
+        icon.width = icon.height = 16;
+        icon.loading = 'lazy';
+        icon.src = '/feed-icon?feed=' + encodeURIComponent(key);
+        label.prepend(icon);
+    }
+
+    // Restore the built-in symbol if an icon file was removed or could not be decoded.
+    document.addEventListener('error', event => {
+        if (event.target.matches?.('.feed-site-icon')) event.target.hidden = true;
+    }, true);
 
     function updateHeadingCounts(counts) {
         const heading = header.querySelector('.heading-counts');
@@ -1191,6 +1212,8 @@
         const count = link.querySelector('.count').textContent;
         const badge = shortcut.querySelector('.count');
         if (badge.textContent !== count) badge.textContent = count;
+        // An icon may arrive after the shortcut was first cloned.
+        if (link.dataset.feed && link.querySelector('.feed-site-icon:not([hidden])')) addFeedIcon(shortcut, link.dataset.feed);
     }
 
     // Keep the selected row clear of the labels pinned over the top of the list.
