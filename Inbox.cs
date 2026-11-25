@@ -104,7 +104,7 @@ internal sealed class Inbox : IDisposable
             {
                 var counts = store.UnreadCounts(dates);
                 var json = new System.Web.Script.Serialization.JavaScriptSerializer();
-                var archive = query["feed"] == null ? null : ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]));
+                var archive = query["feed"] == null ? null : ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]), dates: dates);
                 WriteVisitCount(context, SourceName(query["feed"]), dates);
                 Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival(), archive,
                      icons = store.Icons.Available(), pausedFeeds = store.PausedFeeds().ToArray(),
@@ -522,11 +522,11 @@ internal sealed class Inbox : IDisposable
         html.Append("<div id=sidebar-count-tip role=tooltip hidden></div>");
 
         html.Append("<main><header class=feed-header data-visit-start='").Append(DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture))
-            .Append("'><div class=heading><div class=heading-title><h1")
+            .Append("'><div class=heading><div class=heading-title>");
+        html.Append(StateControl(source, oldest, group, dates)).Append(" <h1")
             .Append(pausedFeeds.Contains(source) ? " class=feed-paused" : "").Append('>').Append(E(title)).Append("</h1> ");
-        AppendHeadingCounts(html, source, group);
+        AppendHeadingCounts(html, source, oldest, group, dates);
         html.Append("</div><div class=toolbar>");
-        html.Append(StateControl(source, oldest, group, dates));
         html.Append("<a class=sort href='").Append(E(ViewUrl(source, unread, !oldest, group, dates))).Append("' title='Switch to ")
             .Append(oldest ? "newest first'>Oldest first" : "oldest first'>Newest first").Append("</a>");
         html.Append(DateControl(source, unread, oldest, group, dates));
@@ -630,23 +630,43 @@ internal sealed class Inbox : IDisposable
         return html.Append("</main></body></html>").ToString();
     }
 
-    private object ArchiveCountSummary(string source, int group, DateTimeOffset? recentAsOf = null)
+    private object ArchiveCountSummary(string source, int group, DateTimeOffset? recentAsOf = null, ArticleFilter dates = null)
     {
-        var counts = store.SidebarArticleCounts(source, group, recentAsOf);
+        var counts = store.SidebarArticleCounts(source, group, recentAsOf, dates);
         if (recentAsOf.HasValue)
             return new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2], last24h = counts[3], lastWeek = counts[4] };
         return new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2] };
     }
 
-    private void AppendHeadingCounts(StringBuilder html, string source, int group)
+    private void AppendHeadingCounts(StringBuilder html, string source, bool oldest, int group, ArticleFilter dates)
     {
-        // The heading uses the same unfiltered scope as the sidebar tooltip.
-        var counts = store.SidebarArticleCounts(source, group);
-        html.Append("<span class=heading-counts><span data-count-part=marked").Append(counts[0] == 0 ? " hidden" : "")
-            .Append("><span data-count=marked>").Append(counts[0]).Append("</span>/</span><span data-count-part=read")
+        // Count all states within the selected dates; each shortcut changes only its own checkbox pair.
+        var counts = store.SidebarArticleCounts(source, group, dates: dates);
+        const int readMask = ArticleFilter.Read | ArticleFilter.Unread;
+        const int markedMask = ArticleFilter.Marked | ArticleFilter.Unmarked;
+        bool allReadStates = (dates.Flags & readMask) == readMask;
+        bool markedOnly = (dates.Flags & markedMask) == ArticleFilter.Marked;
+        var nextRead = dates.WithFlags((dates.Flags & markedMask) | (allReadStates ? ArticleFilter.Unread : readMask));
+        var nextMarked = dates.WithFlags((dates.Flags & readMask) | (markedOnly ? ArticleFilter.Unmarked : ArticleFilter.Marked));
+
+        html.Append("<span class=heading-counts>");
+        AppendHeadingFilter(html, ViewUrl(source, true, oldest, group, nextRead), allReadStates,
+            allReadStates ? "Show unread only" : "Show read and unread");
+        html.Append("<span data-count-part=read")
             .Append(counts[1] == 0 ? " hidden" : "").Append("><span data-count=read>").Append(counts[1])
-            .Append("</span>/<span data-count=unread>").Append(counts[2] - counts[1])
-            .Append("</span>/</span><span data-count=total>").Append(counts[2]).Append("</span></span>");
+            .Append("</span>/</span><span data-count=total>").Append(counts[2]).Append("</span></a>");
+        // Leave the bookmark toggle available at zero so marked-only mode can always be reversed here.
+        AppendHeadingFilter(html, ViewUrl(source, true, oldest, group, nextMarked), markedOnly,
+            markedOnly ? "Show unmarked only" : "Show marked only");
+        html.Append("<span aria-hidden=true>&#x1F516;&#xFE0E;</span><span data-count=marked>")
+            .Append(counts[0]).Append("</span></a></span>");
+    }
+
+    private static void AppendHeadingFilter(StringBuilder html, string url, bool active, string action)
+    {
+        // Use an ordinary link so filters also work with browser history and without scripting.
+        html.Append("<a class=heading-filter href='").Append(E(url)).Append('\'').Append(active ? " data-active" : "")
+            .Append(" title='").Append(E(action)).Append("' aria-label='").Append(E(action)).Append("'>");
     }
 
     private void AppendSidebarTools(StringBuilder html, bool unread, string source, bool oldest, int group, ArticleFilter dates, long total)
@@ -909,7 +929,7 @@ internal sealed class Inbox : IDisposable
     {
         Func<int, string, string> checkbox = (flag, label) => "<label><input type=checkbox name=state value='" + flag + "'"
             + ((dates.Flags & flag) != 0 ? " checked" : "") + "> " + label + "</label>";
-        return "<details class=state-filter><summary>Articles</summary><form action='/' method=get>"
+        return "<details class=state-filter><summary aria-label='Article filters' title='Article filters'>&#x25BE;</summary><form action='/' method=get>"
             + "<input type=hidden name=apply-flags value=1>" + ViewFields(source, true, oldest, group) + DateFields(dates) + SearchField(dates)
             + "<div class=state-columns><fieldset aria-label='Mark status'>" + checkbox(ArticleFilter.Marked, "Marked") + checkbox(ArticleFilter.Unmarked, "Unmarked")
             + "</fieldset><fieldset aria-label='Read status'>" + checkbox(ArticleFilter.Read, "Read") + checkbox(ArticleFilter.Unread, "Unread")

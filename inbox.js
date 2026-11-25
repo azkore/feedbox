@@ -307,12 +307,11 @@
 
     function updateHeadingCounts(counts) {
         const heading = header.querySelector('.heading-counts');
-        for (const field of ['marked', 'read', 'unread', 'total']) {
+        for (const field of ['read', 'total', 'marked']) {
             const value = String(counts[field]);
             const counter = heading.querySelector(`[data-count=${field}]`);
             if (counter.textContent !== value) counter.textContent = value;
         }
-        heading.querySelector('[data-count-part=marked]').hidden = counts.marked === 0;
         heading.querySelector('[data-count-part=read]').hidden = counts.read === 0;
     }
 
@@ -712,7 +711,7 @@
     document.addEventListener('click', async event => {
         // Intercept only inbox controls; let the browser handle new tabs and original articles.
         if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-        const link = event.target.closest('aside a.feed, .toolbar > a, .date-clear, .clear-search, #more');
+        const link = event.target.closest('aside a.feed, .toolbar > a, a.heading-filter, .date-clear, .clear-search, #more');
         if (!link) return;
         event.preventDefault();
         if (link.id !== 'more') { navigate(link.href); return; }
@@ -1304,7 +1303,7 @@
             const total = count('total');
             const readCount = Math.max(0, Math.min(total, count('read') + Number(read) - Number(wasRead)));
             const markedCount = Math.max(0, Math.min(total, count('marked') + Number(marked) - Number(wasMarked)));
-            updateHeadingCounts({ marked: markedCount, read: readCount, unread: total - readCount, total });
+            updateHeadingCounts({ marked: markedCount, read: readCount, total });
         }
         row.dataset.read = read ? '1' : '0';
         row.dataset.marked = marked ? '1' : '0';

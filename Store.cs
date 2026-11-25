@@ -841,17 +841,22 @@ internal sealed class Store : IDisposable
             + (unread ? " AND read_at IS NULL" : ""), source, source)[0][0], CultureInfo.InvariantCulture);
     }
 
-    public long[] SidebarArticleCounts(string source, int group, DateTimeOffset? recentAsOf = null)
+    public long[] SidebarArticleCounts(string source, int group, DateTimeOffset? recentAsOf = null, ArticleFilter dates = null)
     {
-        // Count the complete archive for this row, independently of the reading view's filters.
+        // Count every article state in scope. The heading may narrow the archive by publication date.
         const string archiveCounts = "COUNT(CASE WHEN marked=1 THEN 1 END), COUNT(read_at), COUNT(*)";
         var scope = source != "" ? "source=?1" : group != 0
             ? "source IN (SELECT source FROM feed_group_members WHERE group_id=?1)" : "?1 IS NULL";
         var key = source != "" ? source : group != 0 ? group.ToString(CultureInfo.InvariantCulture) : null;
         var where = " WHERE " + scope;
         if (!recentAsOf.HasValue)
-            return Query("SELECT " + archiveCounts + " FROM posts" + where, key)[0]
-                .Select(value => long.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+        {
+            var sql = "SELECT " + archiveCounts + " FROM posts" + where;
+            var counts = dates != null && dates.Active
+                ? Query(sql + PublicationFilter, key, dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc)
+                : Query(sql, key);
+            return counts[0].Select(value => long.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+        }
 
         // Take both counts in one snapshot so an article moving between tables cannot be counted twice.
         const string activity = "COUNT(CASE WHEN published BETWEEN ?2 AND ?4 THEN 1 END) AS day, "
