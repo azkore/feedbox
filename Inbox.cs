@@ -962,7 +962,8 @@ internal sealed class Inbox : IDisposable
         var label = dates.Active ? (dates.From == "" ? "Oldest" : dates.From) + " &#8211; " + (dates.To == "" ? "Newest" : dates.To) : "Dates";
         ArticleFilter withoutDates;
         ArticleFilter.TryCreate("", "", out withoutDates, dates.Search);
-        return "<details class=date-filter><summary title='Filter all feeds by publication date'>" + label + "</summary>"
+        return "<details class=date-filter" + (dates.Active ? " data-active" : "")
+             + "><summary title='Filter all feeds by publication date'>" + label + "</summary>"
             + "<form action='/' method=get>" + ViewFields(source, unread, oldest, group, dates.Flags) + SearchField(dates)
             + "<label>From <input type=date name=from value='" + E(dates.From) + "'></label>"
             + "<label>To <input type=date name=to value='" + E(dates.To) + "'></label>"
