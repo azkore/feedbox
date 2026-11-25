@@ -889,17 +889,17 @@
         if (!flat) { existing?.remove(); return; }
         if (existing) return;
 
-        // Keep memberships for editing; each feed gets one group-independent link in the flat list.
+        // Keep memberships for editing; only real feed links belong in the flat list.
         const list = document.createElement('div');
         list.className = 'ungrouped-feeds';
         list.id = 'flat-feeds';
         const activeFeed = new URL(displayedUrl).searchParams.get('feed');
         const seen = new Set();
-        for (const row of nav.querySelectorAll('.feed-row')) {
-            const source = row.querySelector('a.feed').dataset.feed;
+        for (const original of nav.querySelectorAll('.feed-row > a.feed[data-feed]')) {
+            const source = original.dataset.feed;
             if (seen.has(source)) continue;
             seen.add(source);
-            const copy = row.cloneNode(true);
+            const copy = original.parentElement.cloneNode(true);
             const link = copy.querySelector('a.feed');
             const url = new URL(link.href);
             url.searchParams.delete('group');
