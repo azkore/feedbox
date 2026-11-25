@@ -1074,11 +1074,14 @@
     function updateMoreFeeds() {
         // Show all affects sidebar visibility only; the badges still reflect the current article filters.
         const flat = flatFeedSort();
+        // Keep the selected row in its usual slot while its visit badge shows completed reading progress.
+        const progressLink = visitRead > 0 && activeFeedLinks().find(link => link.dataset.feed === visitFeed
+            && link.getAttribute('aria-current') === 'page');
         // Keep red feed names discoverable even when their counts and their group's count are zero.
         const redFeed = '.feed[data-feed].has-check-warning:not(.feed-paused)';
         for (const group of nav.querySelectorAll(':scope > .feed-group')) {
             group.hidden = flat || (!showAll.checked && Number(group.querySelector('.group-link .count').textContent) === 0
-                && !group.querySelector(redFeed));
+                && !group.querySelector(redFeed) && !(progressLink && group.contains(progressLink)));
         }
         // Remember feeds hidden for having no matching articles, separately from manually collapsed groups.
         for (const section of sidebarFeedSections()) {
@@ -1092,7 +1095,7 @@
             for (const link of section.querySelectorAll('.feed[data-feed]')) {
                 // Warning feeds stay out of the More feeds bucket until the red status clears.
                 const hasArticles = hasMatchingArticles(link);
-                const tuckAway = !hasArticles && !link.matches(redFeed);
+                const tuckAway = !hasArticles && link !== progressLink && !link.matches(redFeed);
                 link.hidden = tuckAway && !expanded && !showAll.checked;
                 const row = link.parentElement;
                 row.hidden = link.hidden;
@@ -1316,7 +1319,13 @@
         button.setAttribute('aria-pressed', String(read));
         button.title = marked ? 'Marked articles stay unread' : read ? 'Mark unread' : 'Mark read';
         button.disabled = marked;
-        if (!delta) { showVisitCount(); return; }
+        if (!delta) {
+            // A mark change can add or clear progress without changing the number of matching articles.
+            const progress = nav.querySelector('a.feed[aria-current=page] .visit-progress');
+            if (progress && Boolean(progress.textContent) !== (visitRead > 0)) updateMoreFeeds();
+            else showVisitCount();
+            return;
+        }
         for (const feed of document.querySelectorAll('.feed[data-feed]')) {
             if (feed.dataset.feed && feed.dataset.feed !== row.dataset.source) continue;
             // A post contributes once to the total and once to each folder containing its feed.
