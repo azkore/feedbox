@@ -984,20 +984,23 @@
         for (const section of sidebarFeedSections()) sortFeedRows(section, section.querySelector('.more-feeds'));
     }
 
+    const feedRowKey = row => row.querySelector('a.feed').dataset.feed;
+    const feedRowCount = row => Number(row.querySelector('.count').textContent);
+    const feedRanks = rows => new Map(rows.map((row, i) => [feedRowKey(row), i]));
+
     function sortFeedRows(section, more) {
         const order = [...section.querySelectorAll(':scope > .feed-row')];
         if (!originalFeedOrder.has(section)) originalFeedOrder.set(section, new Map(order.map((row, i) => [row, i])));
         const original = originalFeedOrder.get(section);
         const byCount = feedSort.value !== 'name';
-        const previous = byCount ? countFeedOrder.get(section.id) : null;
-        const key = row => row.querySelector('a.feed').dataset.feed;
+        const state = byCount ? countFeedOrder.get(section.id) : null;
+        const previous = state?.ranks;
         // Restore saved positions when navigation replaces the sidebar; append newly added rows.
-        const rank = row => previous ? previous.get(key(row)) ?? previous.size : 0;
-        const count = row => Number(row.querySelector('.count').textContent);
+        const rank = row => previous ? previous.get(feedRowKey(row)) ?? previous.size : 0;
         const label = row => row.querySelector('.feed-label').textContent;
-        const sorted = [...order].sort((a, b) => rank(a) - rank(b) || (byCount ? count(b) - count(a) : 0)
+        const sorted = [...order].sort((a, b) => rank(a) - rank(b) || (byCount ? feedRowCount(b) - feedRowCount(a) : 0)
             || (section.id === 'flat-feeds' ? feedNames.compare(label(a), label(b)) : original.get(a) - original.get(b)));
-        if (byCount) countFeedOrder.set(section.id, new Map(sorted.map((row, i) => [key(row), i])));
+        if (byCount) countFeedOrder.set(section.id, { ranks: feedRanks(sorted), hidden: state?.hidden });
         if (sorted.every((row, i) => row === order[i])) return;
 
         // Move only out-of-order rows, retaining focus and keeping More feeds at the end.
@@ -1011,6 +1014,24 @@
         if (focused && document.activeElement !== focused) focused.focus({ preventScroll: true });
     }
 
+    function placeReturningFeeds(section, more, returning) {
+        const rows = [...section.querySelectorAll(':scope > .feed-row')];
+        const visible = rows.filter(row => !row.hidden && !returning.has(row));
+        // Insert before the first smaller count; the other rows keep their reading order even if their counts drifted.
+        for (const row of [...returning].sort((a, b) => feedRowCount(b) - feedRowCount(a))) {
+            const count = feedRowCount(row);
+            const index = visible.findIndex(other => feedRowCount(other) < count);
+            if (index < 0) {
+                section.insertBefore(row, more);
+                visible.push(row);
+            } else {
+                section.insertBefore(row, visible[index]);
+                visible.splice(index, 0, row);
+            }
+        }
+        return feedRanks([...section.querySelectorAll(':scope > .feed-row')]);
+    }
+
     const expandedMoreFeeds = new Set();
     function updateMoreFeeds() {
         // Show all affects sidebar visibility only; the badges still reflect the current article filters.
@@ -1021,17 +1042,30 @@
             group.hidden = flat || (!showAll.checked && Number(group.querySelector('.group-link .count').textContent) === 0
                 && !group.querySelector(redFeed));
         }
-        // Badge updates can hide an empty row, but leave its place in the reading order intact.
+        // Remember feeds hidden for having no matching articles, separately from manually collapsed groups.
         for (const section of sidebarFeedSections()) {
             const more = section.querySelector('.more-feeds');
             const expanded = expandedMoreFeeds.has(section.id);
+            const state = feedSort.value === 'name' ? null : countFeedOrder.get(section.id);
+            const hidden = new Set();
+            const returning = new Set();
+            const groupHidden = section.closest('.feed-group')?.hidden;
             let zeroUnread = 0;
             for (const link of section.querySelectorAll('.feed[data-feed]')) {
                 // Warning feeds stay out of the More feeds bucket until the red status clears.
-                const tuckAway = Number(link.querySelector('.count').textContent) === 0 && !link.matches(redFeed);
+                const hasArticles = hasMatchingArticles(link);
+                const tuckAway = !hasArticles && !link.matches(redFeed);
                 link.hidden = tuckAway && !expanded && !showAll.checked;
-                if (link.parentElement.classList.contains('feed-row')) link.parentElement.hidden = link.hidden;
+                const row = link.parentElement;
+                row.hidden = link.hidden;
                 if (tuckAway) zeroUnread++;
+                if (!state) continue;
+                if (!hasArticles && (link.hidden || groupHidden)) hidden.add(link.dataset.feed);
+                if (hasArticles && state.hidden?.has(link.dataset.feed)) returning.add(row);
+            }
+            if (state) {
+                if (returning.size) state.ranks = placeReturningFeeds(section, more, returning);
+                state.hidden = hidden;
             }
             more.hidden = showAll.checked || zeroUnread === 0;
             more.setAttribute('aria-expanded', String(expanded && zeroUnread > 0));
