@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 
 internal static class Tests
 {
@@ -168,6 +169,7 @@ internal static class Tests
             TestDeleteFeed();
             TestCheckAllTypes();
             TestRss();
+            TestRssBrowserFallback();
             TestEditRssSource();
             TestFeedIcons();
             TestPublisherPreview();
@@ -848,6 +850,71 @@ internal static class Tests
         {
             foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix);
         }
+    }
+
+    private static void TestRssBrowserFallback()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        var origin = "http://127.0.0.1:" + (55000 + new Random().Next(5000));
+        try
+        {
+            using (var store = new Store(path))
+            using (var rss = new RssCollector())
+            using (var listener = new HttpListener())
+            {
+                var blocked = store.AddRss(new Uri(origin + "/challenge"), 0);
+                var forbidden = store.AddRss(new Uri(origin + "/forbidden"), 0);
+                listener.Prefixes.Add(origin + "/");
+                listener.Start();
+                // Both feeds return 403; only one explicitly advertises a browser challenge.
+                var replies = Task.Run(async () =>
+                {
+                    for (int i = 0; i < 2; i++)
+                    {
+                        var incoming = await listener.GetContextAsync();
+                        if (incoming.Request.Url.AbsolutePath == "/challenge") incoming.Response.Headers["cf-mitigated"] = "challenge";
+                        incoming.Response.StatusCode = 403;
+                        incoming.Response.Close();
+                    }
+                });
+                int requested = 0;
+                Func<Uri, bool, Task<byte[]>> browser = (uri, visible) =>
+                {
+                    requested++;
+                    Expect(uri.AbsolutePath == "/challenge" && visible == (requested == 2), "the browser receives the subscribed URL and the requested visibility");
+                    if (requested == 1) throw new InvalidDataException(RssCollector.NeedsVisit);
+                    return Task.FromResult(Encoding.UTF8.GetBytes("<rss version='2.0'><channel><title>Browser RSS</title><item><title>Item</title><link>/item</link></item></channel></rss>"));
+                };
+                Expect(rss.Check(store, store.RssToCheck(forbidden), browser).GetAwaiter().GetResult() == "RSS feed returned HTTP 403." && requested == 0,
+                    "an ordinary 403 does not start a browser check");
+                Expect(rss.Check(store, store.RssToCheck(blocked), browser).GetAwaiter().GetResult() == RssCollector.NeedsVisit
+                    && store.RssToCheck(blocked).Status == RssCollector.NeedsVisit && store.Count(false, blocked) == 0,
+                    "a browser challenge can leave an RSS subscription awaiting a visit without saving an article");
+                replies.GetAwaiter().GetResult();
+                listener.Stop();
+
+                // Exercise the real inbox action and the same collector that will process the browser's XML.
+                using (var inbox = new Inbox(store, 55000 + new Random().Next(5000), key => Task.FromResult(""),
+                    visitRss: key => rss.Check(store, store.RssToCheck(key), browser, true)))
+                {
+                    string html;
+                    Expect(Request(inbox.Url + "check-status?feed=" + blocked, "GET", null, null, out html) == 200 && html.Contains("Open in feedbox"),
+                        "Check status offers a visible visit for the challenged feed");
+                    var token = Regex.Match(html, "name=token value='([0-9a-f]+)'").Groups[1].Value;
+                    var fields = "token=" + token + "&inline=1&target-feed=";
+                    var localOrigin = inbox.Url.TrimEnd('/');
+                    Expect(Request(inbox.Url + "visit-feed", "POST", localOrigin, fields + forbidden, out html) == 409 && requested == 1,
+                        "a stale or unrelated visit cannot open a browser");
+                    Expect(Request(inbox.Url + "visit-feed", "POST", localOrigin, fields + blocked, out html) == 200 && html == "Added 1 new post."
+                        && store.Count(false, blocked) == 1, "the foreground visit ingests valid RSS and replaces the warning");
+                }
+                Expect(rss.Check(store, store.RssToCheck(blocked), browser).GetAwaiter().GetResult() == "No new posts found." && requested == 3,
+                    "later checks reuse the working browser transport without duplicating the article");
+                Expect(RssBrowser.IsXml("application/rss+xml; charset=utf-8") && RssBrowser.IsXml("text/xml") && !RssBrowser.IsXml("text/html"),
+                    "the browser only hands XML responses to the feed parser");
+            }
+        }
+        finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix); }
     }
 
     private static void TestCleanup()

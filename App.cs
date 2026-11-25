@@ -14,6 +14,7 @@ internal sealed class App : Form
     private readonly Store store;
     private readonly Collector collector;
     private readonly RssCollector rss = new RssCollector();
+    private readonly RssBrowser rssBrowser;
     private readonly Inbox inbox;
     private readonly string profile;
     private readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
@@ -58,9 +59,11 @@ internal sealed class App : Form
         this.store = store;
         this.profile = profile;
         collector = new Collector(store);
+        rssBrowser = new RssBrowser(profile.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + "-rss");
         // Start on the WebView thread, but give the browser the task for this particular check.
         inbox = new Inbox(store, port, feed => (Task<string>)Invoke(new Func<Task<string>>(() => CheckRequested(feed))),
-            (includeRss, includeReddit) => (bool)Invoke(new Func<bool>(() => StartAllChecks(includeRss, includeReddit))), () => allCheckStatus);
+            (includeRss, includeReddit) => (bool)Invoke(new Func<bool>(() => StartAllChecks(includeRss, includeReddit))), () => allCheckStatus,
+            feed => (Task<string>)Invoke(new Func<Task<string>>(() => CheckRss(feed, visit: true))));
         Text = "feedbox - Reddit sign-in";
         ClientSize = new Size(1060, 800);
         ShowInTaskbar = false;
@@ -94,7 +97,7 @@ internal sealed class App : Form
             // Keep a native window handle for WebView2, but make no window visible during collection.
             Hide();
             ExpirePrunedActivity();
-            // RSS does not depend on a WebView or a Reddit session.
+            // Ordinary RSS checks can start before the Reddit browser is ready.
             timer.Start();
             try
             {
@@ -110,7 +113,7 @@ internal sealed class App : Form
         {
             if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
         };
-        FormClosed += (s, e) => { timer.Dispose(); rss.Dispose(); tray.Dispose(); inbox.Dispose(); };
+        FormClosed += (s, e) => { timer.Dispose(); rssBrowser.Dispose(); rss.Dispose(); tray.Dispose(); inbox.Dispose(); };
     }
 
     private void ExpirePrunedActivity()
@@ -274,7 +277,7 @@ internal sealed class App : Form
                 }
                 batch.Detail = null;
                 var outcome = reddit ? await Check(true, feed, batch: true) : await CheckRss(feed, batch: true);
-                if (outcome == "Check paused.") batch.Skipped++;
+                if (outcome == "Check paused." || outcome == RssCollector.NeedsVisit) batch.Skipped++;
                 else
                 {
                     batch.Checked++;
@@ -292,7 +295,7 @@ internal sealed class App : Form
         }
     }
 
-    private async Task<string> CheckRss(string name = null, bool batch = false)
+    private async Task<string> CheckRss(string name = null, bool batch = false, bool visit = false)
     {
         if (exiting || (name == null && (store.IsPaused || checkingAllRss))) return "";
         // A bulk check must respect pauses even after waiting for another RSS request.
@@ -306,17 +309,21 @@ internal sealed class App : Form
             // A manual check after an edit must use the new URL rather than reuse an older result.
             bool sameFeed = requested != null && requested.FeedUrl == rssFeed.FeedUrl;
             var result = await rssCheck;
-            return sameFeed ? result : await CheckRss(name, batch);
+            if (!visit && sameFeed) return result;
+            return await CheckRss(name, batch, visit);
         }
         var source = store.RssToCheck(name);
         if (source == null) return "";
+        // A visit requires an explicit click; bulk checks leave the unresolved status in place.
+        if (batch && source.Status == RssCollector.NeedsVisit) return source.Status;
+        if (visit && source.Status != RssCollector.NeedsVisit) return "This feed no longer needs a browser visit.";
         rssFeed = source;
-        return await (rssCheck = RunRssCheck(source));
+        return await (rssCheck = RunRssCheck(source, visit));
     }
 
-    private async Task<string> RunRssCheck(Source source)
+    private async Task<string> RunRssCheck(Source source, bool visit)
     {
-        try { return await rss.Check(store, source); }
+        try { return await rss.Check(store, source, rssBrowser.Fetch, visit); }
         catch (Exception)
         {
             const string problem = "Could not complete the RSS check.";

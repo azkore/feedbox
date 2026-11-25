@@ -177,8 +177,9 @@ h1 { margin: 0; font-size: 15px; }
 .check-age, .coverage-history { color: var(--muted); }
 .check-status li button { margin-left: 5px; }
 #key-status { margin: 0; padding: 5px 0; color: var(--muted); }
-#key-status:empty, #check-feedback:empty { display: none; }
-#check-feedback { margin: 0; padding: 5px 0; }
+#key-status:empty, .check-result > p:empty { display: none; }
+.check-result { display: flex; align-items: center; flex-wrap: wrap; gap: 0 8px; }
+.check-result > p { margin: 0; padding: 5px 0; }
 #entries h2 { margin: 14px 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
 
 /* Subtract the border so the total inset matches the outside gap. */

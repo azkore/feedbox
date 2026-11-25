@@ -12,8 +12,11 @@ using System.Xml.Linq;
 
 internal sealed class RssCollector : IDisposable
 {
-    private const int MaxBytes = 4 * 1024 * 1024;
+    internal const int MaxBytes = 4 * 1024 * 1024;
     internal const int MaxArticleHtml = 100000;
+    internal const string NeedsVisit = "The feed needs a visit in the feedbox browser.";
+    private const string Changed = "The feed source changed during the check.";
+    private readonly Dictionary<string, Uri> browserUrls = new Dictionary<string, Uri>();
     private readonly HttpClient client = new HttpClient(new HttpClientHandler
     {
         AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
@@ -41,34 +44,37 @@ internal sealed class RssCollector : IDisposable
         return (url.Scheme == Uri.UriSchemeHttp || url.Scheme == Uri.UriSchemeHttps) && url.UserInfo == "";
     }
 
-    public async Task<string> Check(Store store, Source source)
+    internal static bool IsChallenge(string header)
     {
-        const string changed = "The feed source changed during the check.";
-        if (!store.RecordRssAttempt(source)) return changed;
+        return string.Equals(header, "challenge", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public async Task<string> Check(Store store, Source source, Func<Uri, bool, Task<byte[]>> browser = null, bool visit = false)
+    {
+        if (!store.RecordRssAttempt(source)) return Changed;
         string status;
         try
         {
-            using (var response = await client.GetAsync(source.FeedUrl))
+            Uri browserUrl;
+            if (browser != null && browserUrls.TryGetValue(source.FeedUrl, out browserUrl))
+                status = await CheckInBrowser(store, source, browser, browserUrl, visit);
+            else if (browser != null && visit)
+                status = await CheckInBrowser(store, source, browser, new Uri(source.FeedUrl), true);
+            else
             {
-                if (!response.IsSuccessStatusCode) status = "RSS feed returned HTTP " + (int)response.StatusCode + ".";
-                else
+                // Retry only a confirmed challenge; an ordinary HTTP error keeps its original meaning.
+                Uri challenged = null;
+                using (var response = await client.GetAsync(source.FeedUrl))
                 {
-                    using (var data = await response.Content.ReadAsStreamAsync())
-                    {
-                        string title;
-                        Uri icon, site;
-                        var origin = response.RequestMessage.RequestUri;
-                        var posts = Parse(data, origin, source.Name, out title, out icon, out site);
-                        int added = store.SaveRss(source.Name, title, posts, source.FeedUrl);
-                        if (added < 0) return changed;
-                        store.Icons.Discover(source.Name, icon, site ?? new Uri(origin, "/"), () =>
-                        {
-                            var current = store.RssToCheck(source.Name);
-                            return current != null && current.FeedUrl == source.FeedUrl;
-                        });
-                        status = added == 0 ? "No new posts found." : "Added " + added + (added == 1 ? " new post." : " new posts.");
-                    }
+                    var origin = response.RequestMessage.RequestUri;
+                    IEnumerable<string> values;
+                    if (response.Headers.TryGetValues("cf-mitigated", out values) && values.Any(IsChallenge)) challenged = origin;
+                    if (challenged != null) status = "The site returned a browser challenge instead of RSS.";
+                    else if (!response.IsSuccessStatusCode) status = "RSS feed returned HTTP " + (int)response.StatusCode + ".";
+                    else using (var data = await response.Content.ReadAsStreamAsync())
+                        status = Save(store, source, origin, data);
                 }
+                if (challenged != null && browser != null) status = await CheckInBrowser(store, source, browser, challenged, false);
             }
         }
         catch (OperationCanceledException) { status = "RSS feed did not answer within 25 seconds."; }
@@ -76,7 +82,37 @@ internal sealed class RssCollector : IDisposable
         catch (InvalidDataException ex) { status = ex.Message; }
         catch (IOException) { status = "Could not read the RSS response."; }
         catch (XmlException) { status = "The response is not readable RSS or Atom XML."; }
-        return store.NoteRss(source, status) ? status : changed;
+        return store.NoteRss(source, status) ? status : Changed;
+    }
+
+    private async Task<string> CheckInBrowser(Store store, Source source, Func<Uri, bool, Task<byte[]>> browser, Uri uri, bool visit)
+    {
+        // Keep cookies and verification on HTTPS, including for older HTTP subscriptions.
+        if (uri.Scheme == Uri.UriSchemeHttp && uri.IsDefaultPort) uri = new UriBuilder(uri) { Scheme = Uri.UriSchemeHttps, Port = -1 }.Uri;
+        var bytes = await browser(uri, visit);
+        using (var data = new MemoryStream(bytes, false))
+        {
+            var status = Save(store, source, uri, data);
+            // Reuse the proven transport on later checks in this app run.
+            if (status != Changed) browserUrls[source.FeedUrl] = uri;
+            return status;
+        }
+    }
+
+    private static string Save(Store store, Source source, Uri origin, Stream data)
+    {
+        // Both transports use the same parser, article identity, and source version check.
+        string title;
+        Uri icon, site;
+        var posts = Parse(data, origin, source.Name, out title, out icon, out site);
+        int added = store.SaveRss(source.Name, title, posts, source.FeedUrl);
+        if (added < 0) return Changed;
+        store.Icons.Discover(source.Name, icon, site ?? new Uri(origin, "/"), () =>
+        {
+            var current = store.RssToCheck(source.Name);
+            return current != null && current.FeedUrl == source.FeedUrl;
+        });
+        return added == 0 ? "No new posts found." : "Added " + added + (added == 1 ? " new post." : " new posts.");
     }
 
     internal static List<Post> Parse(Stream data, Uri origin, string source, out string title)

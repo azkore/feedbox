@@ -30,6 +30,7 @@ internal sealed class Inbox : IDisposable
     private readonly Func<string, Task<string>> check;
     private readonly Func<bool, bool, bool> startBatch;
     private readonly Func<FeedCheckStatus> batchStatus;
+    private readonly Func<string, Task<string>> visitRss;
     private readonly string host;
     private readonly string token = Guid.NewGuid().ToString("N");
     private readonly string script = Resource("inbox.js");
@@ -39,12 +40,13 @@ internal sealed class Inbox : IDisposable
     public readonly string Url;
 
     public Inbox(Store store, int port, Func<string, Task<string>> check,
-        Func<bool, bool, bool> startBatch = null, Func<FeedCheckStatus> batchStatus = null)
+        Func<bool, bool, bool> startBatch = null, Func<FeedCheckStatus> batchStatus = null, Func<string, Task<string>> visitRss = null)
     {
         this.store = store;
         this.check = check;
         this.startBatch = startBatch;
         this.batchStatus = batchStatus ?? (() => new FeedCheckStatus(false, ""));
+        this.visitRss = visitRss;
         host = "127.0.0.1:" + port;
         Url = "http://" + host + "/";
         // Ask HTTP.sys for only the loopback prefix. No LAN listener or URL reservation is needed.
@@ -361,7 +363,7 @@ internal sealed class Inbox : IDisposable
                     break;
                 case "/check":
                     var batchOutcome = await check(null);
-                    if (form["inline"] == "1") { Reply(context, 200, batchOutcome, "text/plain; charset=utf-8"); return; }
+                    if (form["inline"] == "1") { ReplyCheckResult(context, batchOutcome); return; }
                     break;
                 case "/check-all":
                     if (group != 0 || !string.IsNullOrEmpty(form["feed"])) { Reply(context, 400, "Open All feeds to run this check."); return; }
@@ -376,7 +378,15 @@ internal sealed class Inbox : IDisposable
                     // An invalid target must never fall back to checking the scheduled batch.
                     if (actionFeed == "" || !store.HasSource(actionFeed)) { Reply(context, 400, "Select a subscribed feed."); return; }
                     var outcome = await check(actionFeed);
-                    if (form["inline"] == "1") { Reply(context, 200, outcome, "text/plain; charset=utf-8"); return; }
+                    if (form["inline"] == "1") { ReplyCheckResult(context, outcome); return; }
+                    break;
+                case "/visit-feed":
+                    // Only a current RSS subscription needing a visit can open the browser.
+                    var requested = store.RssToCheck(actionFeed);
+                    if (visitRss == null || requested == null || requested.Status != RssCollector.NeedsVisit)
+                    { Reply(context, 409, "This feed does not need a browser visit."); return; }
+                    var visitOutcome = await visitRss(actionFeed);
+                    if (form["inline"] == "1") { ReplyCheckResult(context, visitOutcome); return; }
                     break;
                 case "/delete-read":
                     if (form["confirmed"] != "1") { Reply(context, 400, "Confirm deletion in the inbox first."); return; }
@@ -523,11 +533,21 @@ internal sealed class Inbox : IDisposable
         else if (!paused) html.Append(Form("check", IconButton("&#x21BB;", "Check now"), unread, source, oldest, group, dates));
         bool allFeeds = source == "" && group == 0;
         var allStatus = allFeeds ? batchStatus() : new FeedCheckStatus(false, "");
+        var needsVisit = visitRss != null && IsRssKey(source) && byName.ContainsKey(source) && byName[source][1] == RssCollector.NeedsVisit;
         html.Append("<details class=check-status data-status-url='").Append(E("/check-status" + ViewUrl(source, true, false, group).Substring(1)))
             .Append("'><summary>Check status</summary>").Append(RenderCheckStatus(source, group, paused))
-            .Append("</details></div></div><p id=check-feedback role=status").Append(allFeeds ? " data-check-batch" : "")
+            .Append("</details></div></div><div class=check-result><p id=check-feedback role=status").Append(allFeeds ? " data-check-batch" : "")
+            .Append(needsVisit ? " class=check-warning" : "")
             .Append(" data-running=").Append(allStatus.Running ? "1" : "0").Append('>')
-            .Append(E(allStatus.Message)).Append("</p><p id=key-status role=status></p></header>");
+            .Append(E(needsVisit ? RssCollector.NeedsVisit : allStatus.Message)).Append("</p>");
+        // Keep the visit beside its result, including when a sidebar action targets a different feed.
+        if (visitRss != null)
+            html.Append(needsVisit ? "<span class=check-visit>" : "<span class=check-visit hidden>")
+                .Append(VisitFeedForm(source, unread, source, oldest, group, dates)).Append("</span>");
+        html.Append("</div><div class=check-result><p id=feed-action-feedback role=status></p>");
+        if (visitRss != null)
+            html.Append("<span class=check-visit hidden>").Append(VisitFeedForm("", unread, source, oldest, group, dates)).Append("</span>");
+        html.Append("</div><p id=key-status role=status></p></header>");
         long markedCount;
         var batch = query["batch"] ?? "";
         var receiptFeed = SourceName(query["receipt-feed"] ?? source);
@@ -759,6 +779,16 @@ internal sealed class Inbox : IDisposable
             && !Regex.IsMatch(detail, @"\AInitial import: \d+ articles remaining\.\z");
     }
 
+    private void ReplyCheckResult(HttpListenerContext context, string outcome)
+    {
+        // Result text remains readable by existing callers; the browser gets explicit display metadata.
+        if (HasCheckWarning(outcome, false) && outcome != "No eligible feed to check.")
+            context.Response.Headers["X-Feedbox-Check-Warning"] = "1";
+        if (visitRss != null && outcome == RssCollector.NeedsVisit)
+            context.Response.Headers["X-Feedbox-Needs-Visit"] = "1";
+        Reply(context, 200, outcome, "text/plain; charset=utf-8");
+    }
+
     private string RenderCheckStatus(string source, int group, bool paused)
     {
         var html = new StringBuilder("<ul>");
@@ -784,6 +814,8 @@ internal sealed class Inbox : IDisposable
             var status = row[1] == "Starting batch saved. Older history was not imported." ? "" :
                 string.IsNullOrWhiteSpace(row[1]) ? "No check result recorded." : row[1];
             if (status != "") html.Append("<br>").Append(E(status));
+            if (visitRss != null && status == RssCollector.NeedsVisit && IsRssKey(row[6]))
+                html.Append("<br>").Append(VisitFeedForm(row[6], true, source, false, group, ArticleFilter.All));
             // Preserve the date and uncertainty of the gap after ordinary collection recovers.
             if (!string.IsNullOrWhiteSpace(row[2]))
                 html.Append(pendingGap ? "<br><span>" : "<br><span class=coverage-history>").Append(E(row[2])).Append("</span>");
@@ -820,6 +852,12 @@ internal sealed class Inbox : IDisposable
         return "<form class=inline method=post action='/" + action + "'><input type=hidden name=token value='" + token + "'>"
              + ViewFields(source, unread, oldest, group, dates.Flags)
             + DateFields(dates) + SearchField(dates) + fields + "</form>";
+    }
+
+    private string VisitFeedForm(string target, bool unread, string source, bool oldest, int group, ArticleFilter dates)
+    {
+        return Form("visit-feed", "<input type=hidden name=target-feed value='" + E(target)
+            + "'><button type=submit>Open in feedbox</button>", unread, source, oldest, group, dates);
     }
 
     private static string ViewFields(string source, bool unread, bool oldest, int group, int flags = -1)

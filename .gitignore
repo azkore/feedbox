@@ -1,5 +1,6 @@
 build/
 profile/
+profile-rss/
 *.sqlite
 *.sqlite-*
 *.sqlite.icons/

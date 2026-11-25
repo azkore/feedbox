@@ -352,10 +352,10 @@ internal sealed class Store : IDisposable
     {
         // Manual checks target an exact key. Scheduled checks rotate through feeds due once an hour.
         var rows = name == null
-            ? Query(@"SELECT name,label,feed_url FROM sources WHERE kind='rss' AND feed_paused=0
-                AND (last_attempt='' OR julianday(last_attempt) <= julianday('now') - 1.0/24) ORDER BY last_attempt,name LIMIT 1")
-            : Query("SELECT name,label,feed_url FROM sources WHERE kind='rss' AND name=?", name);
-        return rows.Count == 0 ? null : new Source { Name = rows[0][0], Label = rows[0][1], FeedUrl = rows[0][2] };
+            ? Query(@"SELECT name,label,feed_url,status FROM sources WHERE kind='rss' AND feed_paused=0 AND status<>?
+                AND (last_attempt='' OR julianday(last_attempt) <= julianday('now') - 1.0/24) ORDER BY last_attempt,name LIMIT 1", RssCollector.NeedsVisit)
+            : Query("SELECT name,label,feed_url,status FROM sources WHERE kind='rss' AND name=?", name);
+        return rows.Count == 0 ? null : new Source { Name = rows[0][0], Label = rows[0][1], FeedUrl = rows[0][2], Status = rows[0][3] };
     }
 
     public int SaveRss(string source, string title, IEnumerable<Post> posts, string expectedUrl = null)
@@ -814,7 +814,7 @@ internal sealed class Store : IDisposable
     public List<string[]> CheckStatuses(string source, int group)
     {
         // Refresh collector status without querying or re-rendering the reading queue.
-        return Query(@"SELECT COALESCE(NULLIF(custom_label,''),label),status,coverage_note,last_attempt,feed_paused,coverage_pending FROM sources s
+        return Query(@"SELECT COALESCE(NULLIF(custom_label,''),label),status,coverage_note,last_attempt,feed_paused,coverage_pending,name FROM sources s
             WHERE (?1='' OR name=?1) AND (CAST(?2 AS INTEGER)=0 OR EXISTS
                 (SELECT 1 FROM feed_group_members m WHERE m.group_id=CAST(?2 AS INTEGER) AND m.source=s.name))
             ORDER BY name", source, group.ToString(CultureInfo.InvariantCulture));

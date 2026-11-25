@@ -44,21 +44,24 @@
         if (button.disabled) return;
         const body = new URLSearchParams(new FormData(checkForm));
         body.set('inline', '1');
-        const fromMenu = body.has('target-feed');
         const feed = body.get('target-feed') ?? body.get('feed');
-        const name = fromMenu ? checkForm.dataset.targetLabel : header.querySelector('h1').textContent;
         const action = checkForm.getAttribute('action');
-        const key = action + ':' + feed;
+        const visit = action === '/visit-feed';
+        const currentFeed = header.querySelector('form[action="/check-feed"]')?.elements.feed.value;
+        const otherFeed = body.has('target-feed') && feed !== currentFeed;
+        const name = checkForm.dataset.targetLabel || checkForm.closest('li')?.querySelector('b').textContent
+            || header.querySelector('h1').textContent;
+        const key = (visit ? '/check-feed' : action) + ':' + feed;
         if (checks.get(key)?.pending) return;
-        const state = { pending: true, text: feed ? `Checking ${name}…` : 'Checking…', seconds: 0 };
+        const state = { pending: true, text: visit ? `Opening ${name} in feedbox…` : feed ? `Checking ${name}…` : 'Checking…', seconds: 0 };
         checks.set(key, state);
-        const feedback = status;
-        if (fromMenu) menuCheck = state;
-        // Report a sidebar refresh in the current view without replacing the batch status.
+        const feedback = header.querySelector('#feed-action-feedback');
+        if (otherFeed) menuCheck = state;
+        // Give sidebar actions their own result without replacing the selected feed or batch status.
         function report() {
             showCheck();
-            if (fromMenu && menuCheck === state && status === feedback)
-                feedback.textContent = state.pending ? state.text + (state.seconds ? ` ${state.seconds}s` : '') : `${name}: ${state.text}`;
+            if (otherFeed && menuCheck === state && feedback.isConnected)
+                renderCheckResult(feedback, state, feed, name, true);
         }
         report();
         const started = Date.now();
@@ -69,14 +72,32 @@
         try {
             const response = await fetch(action, { method: 'POST', body });
             state.text = await response.text() || 'No result received.';
+            state.warning = !response.ok || response.headers.get('X-Feedbox-Check-Warning') === '1';
+            state.needsVisit = response.headers.get('X-Feedbox-Needs-Visit') === '1';
         } catch {
             state.text = 'Lost contact with feedbox before receiving the result.';
+            state.warning = true;
         } finally {
             clearInterval(timer);
             state.pending = false;
             report();
             refreshCheckStatus(header.querySelector('.check-status'));
             refreshUnreadCounts();
+        }
+    }
+
+    function renderCheckResult(feedback, state, feed, name, prefix = false) {
+        feedback.textContent = state.pending ? state.text + (state.seconds ? ` ${state.seconds}s` : '')
+            : (prefix ? `${name}: ` : '') + state.text;
+        feedback.classList.toggle('check-warning', !state.pending && Boolean(state.warning));
+        const action = feedback.parentElement.querySelector('.check-visit');
+        if (!action) return;
+        // Bind the action to the feed that produced the warning, even in an aggregate view.
+        action.hidden = state.pending || !state.needsVisit || !feed;
+        if (!action.hidden) {
+            const form = action.querySelector('form');
+            form.elements['target-feed'].value = feed;
+            form.dataset.targetLabel = name;
         }
     }
 
@@ -96,6 +117,7 @@
             if (!feedback.isConnected || batchRequest) return;
             feedback.dataset.running = Running ? '1' : '0';
             if (feedback.textContent !== Message) feedback.textContent = Message;
+            feedback.classList.toggle('check-warning', !Running && Message.startsWith('Could not complete'));
             if (form) form.querySelector('button').disabled = Running;
             if (wasRunning && !Running) {
                 refreshCheckStatus(header.querySelector('.check-status'));
@@ -116,11 +138,18 @@
         batchRequest = true;
         try {
             const response = await fetch(form.action, { method: 'POST', body: fields });
-            if (form.isConnected) feedback.textContent = await response.text();
+            const message = await response.text();
+            if (form.isConnected) {
+                feedback.textContent = message;
+                feedback.classList.toggle('check-warning', !response.ok);
+            }
             if (!response.ok) return;
             if (form.isConnected) feedback.dataset.running = '1';
         } catch {
-            if (form.isConnected) feedback.textContent = 'Lost contact with feedbox.';
+            if (form.isConnected) {
+                feedback.textContent = 'Lost contact with feedbox.';
+                feedback.classList.add('check-warning');
+            }
         } finally {
             batchRequest = false;
             // Keep the button available for another attempt if the request did not start a batch.
@@ -147,7 +176,7 @@
         if (!state) return;
         const button = form.querySelector('button');
         button.disabled = state.pending;
-        header.querySelector('#check-feedback').textContent = state.pending && state.seconds ? `${state.text} ${state.seconds}s` : state.text;
+        renderCheckResult(header.querySelector('#check-feedback'), state, form.elements.feed.value, header.querySelector('h1').textContent);
     }
     showCheck();
 
@@ -674,7 +703,7 @@
             return;
         }
         const action = form.getAttribute('action');
-        if (!['/check-feed', '/check', '/check-all', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/feed-settings', '/delete-feed', '/import-opml'].includes(action)) return;
+        if (!['/check-feed', '/visit-feed', '/check', '/check-all', '/read', '/mark-feed-read', '/undo-feed-read', '/source', '/rss-source', '/group', '/collection', '/delete-read', '/feed-settings', '/delete-feed', '/import-opml'].includes(action)) return;
         event.preventDefault();
         if (busy || navigation) return;
         if (form.closest('.feed-menu')) {
@@ -682,7 +711,7 @@
             closeFeedMenu();
         }
         if (action === '/check-all') { await checkAll(form); return; }
-        if (action === '/check-feed' || action === '/check') { await checkFeed(form); return; }
+        if (action === '/check-feed' || action === '/visit-feed' || action === '/check') { await checkFeed(form); return; }
 
         const button = event.submitter || form.querySelector('button');
         const fields = new URLSearchParams(new FormData(form));
