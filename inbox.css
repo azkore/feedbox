@@ -73,6 +73,8 @@ aside nav { --group-indent: 6px; --feed-indent: 26px; flex: 1; min-height: 0; ov
 .feed[aria-current=page], .feed.is-current-pin { background: var(--current-feed); }
 .feed[aria-current=page] { font-weight: 650; }
 .count-badge { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+/* Keep the raw count available for sorting and sidebar visibility when progress replaces it. */
+.visit-progress:not(:empty) + .count { display: none; }
 #sidebar-count-tip { position: fixed; z-index: 5; pointer-events: none; padding: 7px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); box-shadow: 0 4px 15px #0002; font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: pre-line; }
 .feed[aria-current=page] .count-badge, .feed.is-current-pin .count-badge { font-weight: 750; }
 .feed-row { position: relative; }

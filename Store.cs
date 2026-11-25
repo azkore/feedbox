@@ -919,13 +919,14 @@ internal sealed class Store : IDisposable
         }
     }
 
-    public long ReadSince(string source, DateTimeOffset since, ArticleFilter dates)
+    public string[] VisitCounts(string source, DateTimeOffset since, ArticleFilter dates)
     {
-        // Use the saved read time so bulk actions and Undo count even for articles outside the page.
-        // Match the date range and search, independently of the read/unread visibility checkboxes.
-        return long.Parse(Query("SELECT COUNT(*) FROM posts WHERE source=? AND read_at>?" + PublicationFilter + SearchFilter,
-            source, Stamp(since), dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc, dates.Search, dates.Search, dates.Search)[0][0],
-            CultureInfo.InvariantCulture);
+        // Count the current queue plus articles read this visit, once per article even in an All articles view.
+        // Both counts use the same date range and search, including articles outside the rendered page.
+        var visible = StateFilter(dates.Flags < 0 ? ArticleFilter.Inbox : dates.Flags);
+        return Query("SELECT COUNT(CASE WHEN read_at>?1 THEN 1 END), COUNT(CASE WHEN read_at>?1 OR (1" + visible
+            + ") THEN 1 END) FROM posts WHERE source=?2" + PublicationFilter + SearchFilter,
+            Stamp(since), source, dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc, dates.Search, dates.Search, dates.Search)[0];
     }
 
     public string[] UpdateMark(string id, bool opened, bool toggle = false)

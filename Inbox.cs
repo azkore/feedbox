@@ -433,7 +433,11 @@ internal sealed class Inbox : IDisposable
         DateTimeOffset since;
         if (source != "" && DateTimeOffset.TryParseExact(context.Request.Headers["X-Feedbox-Read-Since"], "o",
             CultureInfo.InvariantCulture, DateTimeStyles.None, out since))
-            context.Response.Headers["X-Feedbox-Visit-Read"] = store.ReadSince(source, since, dates).ToString(CultureInfo.InvariantCulture);
+        {
+            var counts = store.VisitCounts(source, since, dates);
+            context.Response.Headers["X-Feedbox-Visit-Read"] = counts[0];
+            context.Response.Headers["X-Feedbox-Visit-Total"] = counts[1];
+        }
     }
 
     private string Render(string path, NameValueCollection query, ArticleFilter dates)
@@ -964,7 +968,7 @@ internal sealed class Inbox : IDisposable
              + (paused ? " aria-description='Feed paused'" : warning ? " aria-description='Check status has a warning'" : "")
             + (source == "" && group > 0 && group == selectedGroup ? " data-active-group" : "")
             + (source == selected && group == selectedGroup ? " aria-current=page" : "") + "><span class=feed-label>" + icon + E(label)
-             + "</span><span class=count-badge>" + (source == "" ? "" : "<span class=visit-read></span>")
+             + "</span><span class=count-badge>" + (source == "" ? "" : "<span class=visit-progress></span>")
              + "<span class=count>" + count.ToString(CultureInfo.InvariantCulture) + "</span></span></a>";
         if (source == "") return link;
         return "<div class=feed-row>" + link + "<button type=button class=feed-options aria-expanded=false aria-label='Options for "

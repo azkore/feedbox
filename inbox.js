@@ -15,23 +15,27 @@
     let visitFeed = viewFeed(displayedUrl);
     let visitStart = header.dataset.visitStart;
     let visitRead = 0;
+    let visitTotal = 0;
 
     function visitHeaders() {
         return visitFeed ? { 'X-Feedbox-Read-Since': visitStart } : undefined;
     }
 
     function acceptVisitCount(response) {
-        const count = response.headers.get('X-Feedbox-Visit-Read');
-        if (count !== null) visitRead = Number(count);
+        const read = response.headers.get('X-Feedbox-Visit-Read');
+        const total = response.headers.get('X-Feedbox-Visit-Total');
+        if (read !== null && total !== null) {
+            visitRead = Number(read);
+            visitTotal = Number(total);
+        }
     }
 
     function showVisitCount() {
-        // Keep the prefix separate from the badge number used for sorting and zero-count hiding.
-        const selected = 'a.feed[aria-current=page] > .count-badge > .visit-read, a.feed.is-current-pin > .count-badge > .visit-read';
-        for (const prefix of nav.querySelectorAll('.visit-read:not(:empty)'))
-            if (!prefix.matches(selected)) prefix.textContent = '';
-        // Hide both the read count and its slash when there is nothing to report.
-        for (const prefix of nav.querySelectorAll(selected)) prefix.textContent = visitRead > 0 ? `${visitRead}/` : '';
+        // Show progress only on the selected feed and its shortcut, once at least one article is read.
+        const selected = 'a.feed[aria-current=page] > .count-badge > .visit-progress, a.feed.is-current-pin > .count-badge > .visit-progress';
+        for (const progress of nav.querySelectorAll('.visit-progress:not(:empty)'))
+            if (!progress.matches(selected)) progress.textContent = '';
+        for (const progress of nav.querySelectorAll(selected)) progress.textContent = visitRead > 0 ? `${visitRead}/${visitTotal}` : '';
     }
 
     // Preserve browser preferences and bookmarks when switching to the new storage names.
@@ -404,6 +408,7 @@
             visitFeed = nextFeed;
             visitStart = header.dataset.visitStart;
             visitRead = 0;
+            visitTotal = 0;
         }
         status = main.querySelector('#key-status');
         header.querySelector('.check-status').open = statusOpen;
