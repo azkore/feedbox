@@ -113,7 +113,7 @@ internal sealed class Store : IDisposable
         Check(sqlite3_busy_timeout(db, 5000));
         Run("PRAGMA journal_mode=WAL");
         var version = int.Parse(Query("PRAGMA user_version")[0][0], CultureInfo.InvariantCulture);
-        if (version < 0 || version > 17) throw new InvalidOperationException("Unsupported database version.");
+        if (version < 0 || version > 18) throw new InvalidOperationException("Unsupported database version.");
         Transaction(() =>
         {
             Run(@"CREATE TABLE IF NOT EXISTS sources (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1,
@@ -232,6 +232,13 @@ internal sealed class Store : IDisposable
                 Run(@"UPDATE sources SET coverage_pending=1 WHERE coverage_note<>'' AND status<>'No new posts found.'
                     AND status NOT GLOB 'Added [0-9]* new post.' AND status NOT GLOB 'Added [0-9]* new posts.'");
                 Run("PRAGMA user_version=17");
+            }
+            if (version < 18)
+            {
+                // Keep one timestamp per pruned article, including articles published at the same instant.
+                Run("CREATE TABLE pruned_activity (source TEXT NOT NULL, published TEXT NOT NULL)");
+                Run("CREATE INDEX pruned_activity_published ON pruned_activity(published, source)");
+                Run("PRAGMA user_version=18");
             }
         });
     }
@@ -679,6 +686,7 @@ internal sealed class Store : IDisposable
             if (!HasSource(source)) return;
             // Remove a subscription from all groups and from the archive atomically.
             Run("DELETE FROM posts WHERE source=?", source);
+            Run("DELETE FROM pruned_activity WHERE source=?", source);
             Run("DELETE FROM feed_group_members WHERE source=?", source);
             Run("DELETE FROM sources WHERE name=?", source);
             deleted = true;
@@ -836,24 +844,23 @@ internal sealed class Store : IDisposable
     public long[] SidebarArticleCounts(string source, int group, DateTimeOffset? recentAsOf = null)
     {
         // Count the complete archive for this row, independently of the reading view's filters.
-        // Marked can overlap either read state; counting posts directly keeps the global total unique.
-        var sql = "SELECT COUNT(CASE WHEN marked=1 THEN 1 END), COUNT(read_at), COUNT(*)";
-        var args = new List<string>();
-        // Only the tooltip needs the rolling count, based on publication time rather than when we saved the post.
-        if (recentAsOf.HasValue)
-        {
-            sql += ", COUNT(CASE WHEN published>=? AND published<=? THEN 1 END)";
-            args.Add(Stamp(recentAsOf.Value.AddHours(-24)));
-            args.Add(Stamp(recentAsOf.Value));
-        }
-        sql += " FROM posts";
-        if (source != "") { sql += " WHERE source=?"; args.Add(source); }
-        else if (group != 0)
-        {
-            sql += " WHERE source IN (SELECT source FROM feed_group_members WHERE group_id=?)";
-            args.Add(group.ToString(CultureInfo.InvariantCulture));
-        }
-        var result = Query(sql, args.ToArray());
+        const string archiveCounts = "COUNT(CASE WHEN marked=1 THEN 1 END), COUNT(read_at), COUNT(*)";
+        var scope = source != "" ? "source=?1" : group != 0
+            ? "source IN (SELECT source FROM feed_group_members WHERE group_id=?1)" : "?1 IS NULL";
+        var key = source != "" ? source : group != 0 ? group.ToString(CultureInfo.InvariantCulture) : null;
+        var where = " WHERE " + scope;
+        if (!recentAsOf.HasValue)
+            return Query("SELECT " + archiveCounts + " FROM posts" + where, key)[0]
+                .Select(value => long.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+
+        // Take both counts in one snapshot so an article moving between tables cannot be counted twice.
+        const string activity = "COUNT(CASE WHEN published BETWEEN ?2 AND ?4 THEN 1 END) AS day, "
+            + "COUNT(CASE WHEN published BETWEEN ?3 AND ?4 THEN 1 END) AS week";
+        var now = recentAsOf.Value;
+        var result = Query("SELECT saved.marked, saved.read, saved.total, saved.day + pruned.day, saved.week + pruned.week "
+            + "FROM (SELECT COUNT(CASE WHEN marked=1 THEN 1 END) AS marked, COUNT(read_at) AS read, COUNT(*) AS total, "
+            + activity + " FROM posts" + where + ") saved CROSS JOIN (SELECT " + activity + " FROM pruned_activity"
+            + where + " AND published BETWEEN ?3 AND ?4) pruned", key, Stamp(now.AddHours(-24)), Stamp(now.AddDays(-7)), Stamp(now));
         return result[0].Select(value => long.Parse(value, CultureInfo.InvariantCulture)).ToArray();
     }
 
@@ -967,8 +974,12 @@ internal sealed class Store : IDisposable
             long deleted = 0;
             Transaction(() =>
             {
-                // Commit the deletion and deduplication IDs together. Unread rows are outside both statements.
+                // Move recent publication times in the same transaction as the deletion and deduplication IDs.
+                var now = DateTimeOffset.UtcNow;
+                ExpirePrunedActivity(now);
                 deleted = ReadCount(cutoff);
+                Run(@"INSERT INTO pruned_activity(source,published) SELECT source,published FROM posts
+                    WHERE marked=0 AND read_at <= ? AND published BETWEEN ? AND ?", cutoff, Stamp(now.AddDays(-7)), Stamp(now));
                 Run("INSERT OR IGNORE INTO deleted_posts(id) SELECT id FROM posts WHERE marked=0 AND read_at <= ?", cutoff);
                 Run("DELETE FROM posts WHERE marked=0 AND read_at <= ?", cutoff);
             });
@@ -983,6 +994,11 @@ internal sealed class Store : IDisposable
             }
             catch (InvalidOperationException) { return Tuple.Create(deleted, false); }
         }
+    }
+
+    public void ExpirePrunedActivity(DateTimeOffset now)
+    {
+        Run("DELETE FROM pruned_activity WHERE published < ?", Stamp(now.AddDays(-7)));
     }
 
     private void Transaction(Action write)

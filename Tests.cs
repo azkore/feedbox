@@ -161,6 +161,7 @@ internal static class Tests
             using (var reopened = new Store(path))
                 Expect(reopened.Groups().Count == 2 && reopened.IsPaused, "the grouped database reopens without rerunning old migrations");
             TestCleanup();
+            TestPrunedActivity();
             TestArchiveBridge();
             TestRedditCollectionStart();
             TestMarkFeedRead();
@@ -879,6 +880,54 @@ internal static class Tests
         {
             foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix);
         }
+    }
+
+    private static void TestPrunedActivity()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sqlite");
+        var now = DateTimeOffset.UtcNow;
+        try
+        {
+            using (var store = new Store(path))
+            {
+                // Two posts share a publication time and the feed belongs to two groups.
+                var dayOne = Post("activity1", "First recent post");
+                var dayTwo = Post("activity2", "Second recent post");
+                var week = Post("activity3", "Older this week");
+                var old = Post("activity4", "Outside both windows");
+                var unread = Post("activity5", "Still in the archive");
+                dayOne.created = dayTwo.created = unread.created = now.AddHours(-1).ToString("o");
+                week.created = now.AddDays(-3).ToString("o");
+                old.created = now.AddDays(-8).ToString("o");
+                store.ImportHistoricalPosts("rss", new[] { dayOne, dayTwo, week, old });
+                store.ImportHistoricalPosts("other", new[] { unread });
+                var group = store.AddGroup("Activity");
+                var otherGroup = store.AddGroup("Also subscribed");
+                store.ReorganizeFeed("rss", new[] { group, otherGroup });
+                foreach (var post in new[] { dayOne, dayTwo, week, old }) store.SetRead(post.id, true);
+
+                var before = store.SidebarArticleCounts("rss", 0, now);
+                Expect(before.SequenceEqual(new long[] { 0, 4, 4, 2, 3 }), "only articles published inside each window count toward activity");
+                Expect(store.DeleteReadAndCompact(DateTimeOffset.UtcNow.ToString("o")).Item1 == 4, "activity fixture prunes its four read articles");
+                Expect(store.SidebarArticleCounts("rss", 0, now).SequenceEqual(new long[] { 0, 0, 0, 2, 3 })
+                    && store.SidebarArticleCounts("", group, now).SequenceEqual(new long[] { 0, 0, 0, 2, 3 })
+                    && store.SidebarArticleCounts("", 0, now).SequenceEqual(new long[] { 0, 0, 1, 3, 4 }),
+                    "pruning preserves rolling activity at feed, group and All feeds scope without inflating archive totals");
+                Expect(store.SidebarArticleCounts("rss", 0, now.AddDays(1)).Skip(3).SequenceEqual(new long[] { 0, 3 })
+                    && store.SidebarArticleCounts("rss", 0, now.AddDays(5)).Skip(3).SequenceEqual(new long[] { 0, 2 }),
+                    "activity ages out of the daily and weekly windows at different times");
+
+                // Query the original window again to distinguish physical expiration from filtering it out.
+                store.ExpirePrunedActivity(now.AddDays(5));
+                Expect(store.SidebarArticleCounts("rss", 0, now)[4] == 2, "expiration removes the timestamp older than seven days");
+                store.ExpirePrunedActivity(now.AddDays(8));
+                Expect(store.SidebarArticleCounts("rss", 0, now).Skip(3).SequenceEqual(new long[] { 0, 0 }),
+                    "no extra publication times remain after the week has passed");
+                store.ImportHistoricalPosts("rss", new[] { dayOne });
+                Expect(store.Count(false, "rss") == 0, "activity expiration leaves deletion deduplication intact");
+            }
+        }
+        finally { foreach (var suffix in new[] { "", "-wal", "-shm" }) if (File.Exists(path + suffix)) File.Delete(path + suffix); }
     }
 
     private static int Request(string url, string method, string origin, string form, out string text)

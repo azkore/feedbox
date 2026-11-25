@@ -82,12 +82,18 @@ internal sealed class App : Form
         tray.ContextMenuStrip = menu;
         tray.DoubleClick += (s, e) => Process.Start(inbox.Url);
         tray.Visible = true;
-        timer.Tick += async (s, e) => await Task.WhenAll(Check(false), CheckRss());
+        timer.Tick += async (s, e) =>
+        {
+            // Activity metadata expires even when no new articles are pruned or collection is paused.
+            ExpirePrunedActivity();
+            await Task.WhenAll(Check(false), CheckRss());
+        };
 
         Shown += async (s, e) =>
         {
             // Keep a native window handle for WebView2, but make no window visible during collection.
             Hide();
+            ExpirePrunedActivity();
             // RSS does not depend on a WebView or a Reddit session.
             timer.Start();
             try
@@ -105,6 +111,12 @@ internal sealed class App : Form
             if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
         };
         FormClosed += (s, e) => { timer.Dispose(); rss.Dispose(); tray.Dispose(); inbox.Dispose(); };
+    }
+
+    private void ExpirePrunedActivity()
+    {
+        try { store.ExpirePrunedActivity(DateTimeOffset.UtcNow); }
+        catch (InvalidOperationException error) { Debug.WriteLine(error.Message); } // A busy archive can wait for the next tick.
     }
 
     private void SignIn()

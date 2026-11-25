@@ -592,7 +592,7 @@ internal sealed class Inbox : IDisposable
     {
         var counts = store.SidebarArticleCounts(source, group, recentAsOf);
         if (recentAsOf.HasValue)
-            return new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2], last24h = counts[3] };
+            return new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2], last24h = counts[3], lastWeek = counts[4] };
         return new { marked = counts[0], read = counts[1], unread = counts[2] - counts[1], total = counts[2] };
     }
 
