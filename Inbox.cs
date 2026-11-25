@@ -86,6 +86,7 @@ internal sealed class Inbox : IDisposable
             dates = dates.WithFlags(ViewFlags(query));
             if (request.HttpMethod == "GET" && (request.Url.AbsolutePath == "/" || request.Url.AbsolutePath == "/new-articles"))
             {
+                if (request.Url.AbsolutePath == "/") WriteVisitCount(context, SourceName(query["feed"]), dates);
                 Reply(context, 200, Render(request.Url.AbsolutePath, query, dates));
                 return;
             }
@@ -104,6 +105,7 @@ internal sealed class Inbox : IDisposable
                 var counts = store.UnreadCounts(dates);
                 var json = new System.Web.Script.Serialization.JavaScriptSerializer();
                 var archive = query["feed"] == null ? null : ArchiveCountSummary(SourceName(query["feed"]), GroupId(query["group"]));
+                WriteVisitCount(context, SourceName(query["feed"]), dates);
                 Reply(context, 200, json.Serialize(new { feeds = counts, total = counts.Values.Sum(), arrival = store.LatestArrival(), archive,
                      icons = store.Icons.Available(), pausedFeeds = store.PausedFeeds().ToArray(),
                      warnings = store.FeedCheckHealth().Where(row => HasCheckWarning(row[1], row[2] == "1")).Select(row => row[0]).ToArray() }),
@@ -335,7 +337,12 @@ internal sealed class Inbox : IDisposable
                         else Reply(context, 409, "This article is marked. Press B or open it with V to mark it read.");
                         return;
                     }
-                    if (form["inline"] == "1") { context.Response.StatusCode = 204; return; }
+                    if (form["inline"] == "1")
+                    {
+                        WriteVisitCount(context, SourceName(form["feed"]), dates);
+                        context.Response.StatusCode = 204;
+                        return;
+                    }
                     break;
                 case "/mark-article":
                     var article = form["id"] ?? "";
@@ -343,6 +350,7 @@ internal sealed class Inbox : IDisposable
                     if (!ArticleId(article) || (action != "toggle" && action != "opened" && action != "mark")) { Reply(context, 400, "Invalid article or action."); return; }
                     var state = store.UpdateMark(article, action == "opened", toggle: action == "toggle");
                     if (state == null) { Reply(context, 404, "This article is no longer in the inbox."); return; }
+                    WriteVisitCount(context, SourceName(form["feed"]), dates);
                     Reply(context, 200, "{\"marked\":" + state[0] + ",\"read\":" + (state[1] == null ? "0" : "1") + "}", "application/json; charset=utf-8");
                     return;
                 case "/mark-feed-read":
@@ -417,6 +425,15 @@ internal sealed class Inbox : IDisposable
         catch (HttpListenerException) { }
         catch (IOException) { }
         catch (InvalidOperationException) { }
+    }
+
+    private void WriteVisitCount(HttpListenerContext context, string source, ArticleFilter dates)
+    {
+        // The tab supplies its visit boundary on existing requests; no visit state is stored on the server.
+        DateTimeOffset since;
+        if (source != "" && DateTimeOffset.TryParseExact(context.Request.Headers["X-Feedbox-Read-Since"], "o",
+            CultureInfo.InvariantCulture, DateTimeStyles.None, out since))
+            context.Response.Headers["X-Feedbox-Visit-Read"] = store.ReadSince(source, since, dates).ToString(CultureInfo.InvariantCulture);
     }
 
     private string Render(string path, NameValueCollection query, ArticleFilter dates)
@@ -500,7 +517,8 @@ internal sealed class Inbox : IDisposable
         // Keep the tooltip outside the sidebar's stacking context so reader edges cannot cover it.
         html.Append("<div id=sidebar-count-tip role=tooltip hidden></div>");
 
-        html.Append("<main><header class=feed-header><div class=heading><div class=heading-title><h1")
+        html.Append("<main><header class=feed-header data-visit-start='").Append(DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture))
+            .Append("'><div class=heading><div class=heading-title><h1")
             .Append(pausedFeeds.Contains(source) ? " class=feed-paused" : "").Append('>').Append(E(title)).Append("</h1> ");
         AppendHeadingCounts(html, source, group);
         html.Append("</div><div class=toolbar>");
@@ -946,7 +964,8 @@ internal sealed class Inbox : IDisposable
              + (paused ? " aria-description='Feed paused'" : warning ? " aria-description='Check status has a warning'" : "")
             + (source == "" && group > 0 && group == selectedGroup ? " data-active-group" : "")
             + (source == selected && group == selectedGroup ? " aria-current=page" : "") + "><span class=feed-label>" + icon + E(label)
-            + "</span><span class=count>" + count.ToString(CultureInfo.InvariantCulture) + "</span></a>";
+             + "</span><span class=count-badge>" + (source == "" ? "" : "<span class=visit-read></span>")
+             + "<span class=count>" + count.ToString(CultureInfo.InvariantCulture) + "</span></span></a>";
         if (source == "") return link;
         return "<div class=feed-row>" + link + "<button type=button class=feed-options aria-expanded=false aria-label='Options for "
             + E(label) + "' title='Feed options'>&#x22EF;</button></div>";

@@ -45,7 +45,7 @@ aside { position: fixed; inset: 0 auto 0 0; width: var(--sidebar-width); backgro
 /* Use the same right-hand slot as each feed's hover menu. */
 .sidebar-tools > summary { position: absolute; inset-inline-end: calc(10px + var(--sidebar-scrollbar, 0px)); top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 24px; min-height: 18px; list-style: none; border-radius: 5px; color: var(--muted); font-size: 14px; line-height: 1; visibility: hidden; }
 .sidebar-header:hover .sidebar-tools > summary, .sidebar-header:focus-within .sidebar-tools > summary, .sidebar-tools[open] > summary { visibility: visible; }
-.sidebar-header:has(.sidebar-tools[open]) .count { visibility: hidden; }
+.sidebar-header:has(.sidebar-tools[open]) .count-badge { visibility: hidden; }
 .sidebar-tools > summary::-webkit-details-marker { display: none; }
 .sidebar-tools > summary:hover, .sidebar-tools[open] > summary { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--ink); }
 /* Let the controls scroll in a small window without borrowing space from the feed list. */
@@ -72,16 +72,16 @@ aside nav { --group-indent: 6px; --feed-indent: 26px; flex: 1; min-height: 0; ov
 /* Highlight the selected view, including its pinned copy when the original is out of view. */
 .feed[aria-current=page], .feed.is-current-pin { background: var(--current-feed); }
 .feed[aria-current=page] { font-weight: 650; }
-.count { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.count-badge { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
 #sidebar-count-tip { position: fixed; z-index: 5; pointer-events: none; padding: 7px 10px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--ink); box-shadow: 0 4px 15px #0002; font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: pre-line; }
-.feed[aria-current=page] .count, .feed.is-current-pin .count { font-weight: 750; }
+.feed[aria-current=page] .count-badge, .feed.is-current-pin .count-badge { font-weight: 750; }
 .feed-row { position: relative; }
 nav .feed-row { margin-inline-start: var(--feed-indent); }
 nav .feed-row > .feed { padding-inline-start: 5px; }
 .feed-row .feed-options { position: absolute; inset-inline-end: 3px; top: 50%; transform: translateY(-50%); width: 24px; padding: 1px 0; visibility: hidden; border-color: transparent; background: transparent; }
 .feed-row:hover .feed-options, .feed-row:focus-within .feed-options, .feed-options[aria-expanded='true'] { visibility: visible; }
 .feed-row .feed-options:is(:hover, [aria-expanded='true']) { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--ink); }
-.feed-row:hover .count, .feed-row:focus-within .count { visibility: hidden; }
+.feed-row:hover .count-badge, .feed-row:focus-within .count-badge { visibility: hidden; }
 .feed-menu { position: fixed; z-index: 5; min-width: 140px; padding: 4px; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); box-shadow: 0 4px 15px #0002; }
 .feed-menu form.inline { display: block; }
 .feed-menu button { display: block; width: 100%; padding: 5px 7px; text-align: left; border-color: transparent; }

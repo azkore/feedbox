@@ -11,6 +11,28 @@
     let readRevision = 0;
     let readerTail = 0;
     const rows = () => Array.from(entries.querySelectorAll('article[data-post]'));
+    const viewFeed = url => new URL(url).searchParams.get('feed') || '';
+    let visitFeed = viewFeed(displayedUrl);
+    let visitStart = header.dataset.visitStart;
+    let visitRead = 0;
+
+    function visitHeaders() {
+        return visitFeed ? { 'X-Feedbox-Read-Since': visitStart } : undefined;
+    }
+
+    function acceptVisitCount(response) {
+        const count = response.headers.get('X-Feedbox-Visit-Read');
+        if (count !== null) visitRead = Number(count);
+    }
+
+    function showVisitCount() {
+        // Keep the prefix separate from the badge number used for sorting and zero-count hiding.
+        const selected = 'a.feed[aria-current=page] > .count-badge > .visit-read, a.feed.is-current-pin > .count-badge > .visit-read';
+        for (const prefix of nav.querySelectorAll('.visit-read:not(:empty)'))
+            if (!prefix.matches(selected)) prefix.textContent = '';
+        // Hide both the read count and its slash when there is nothing to report.
+        for (const prefix of nav.querySelectorAll(selected)) prefix.textContent = visitRead > 0 ? `${visitRead}/` : '';
+    }
 
     // Preserve browser preferences and bookmarks when switching to the new storage names.
     function migrateBrowserKeys(storage) {
@@ -222,11 +244,12 @@
             url.searchParams.set('feed', filter.get('feed') || '');
             if (filter.has('group')) url.searchParams.set('group', filter.get('group'));
             for (const bound of ['from', 'to', 'q']) if (filter.has(bound)) url.searchParams.set(bound, filter.get(bound));
-            const response = await fetch(url);
+            const response = await fetch(url, { headers: visitHeaders() });
             if (!response.ok) return;
             const { feeds, total, arrival, archive, icons, warnings, pausedFeeds } = await response.json();
             // Discard a snapshot taken before a newer read action or view change.
             if (busy || navigation || entries !== view || readRevision !== revision) return;
+            acceptVisitCount(response);
             if (archive) updateHeadingCounts(archive);
             const unread = name => Object.hasOwn(feeds, name) ? feeds[name] : 0;
             const availableIcons = new Set(icons || []);
@@ -375,6 +398,13 @@
         entries = main.querySelector('#entries');
         observePublisherPreviews();
         header = main.querySelector('.feed-header');
+        // Filters and same-feed actions replace the HTML but do not start a new visit.
+        const nextFeed = viewFeed(url);
+        if (nextFeed !== visitFeed) {
+            visitFeed = nextFeed;
+            visitStart = header.dataset.visitStart;
+            visitRead = 0;
+        }
         status = main.querySelector('#key-status');
         header.querySelector('.check-status').open = statusOpen;
         selected = null;
@@ -411,11 +441,14 @@
             const url = new URL(href, location.href);
             const anchor = !url.searchParams.has('before') && readingPosition(url);
             if (anchor) url.searchParams.set('at', anchor);
-            const response = await fetch(url, { signal: request.signal, cache: 'no-store' });
+            // Recount against the destination filters while keeping the same feed visit boundary.
+            const headers = viewFeed(url) === visitFeed ? visitHeaders() : undefined;
+            const response = await fetch(url, { signal: request.signal, cache: 'no-store', headers });
             const page = await pageFrom(response);
             if (navigation === request) {
                 const visible = new URL(href, location.href);
                 visible.searchParams.delete('at');
+                acceptVisitCount(response);
                 applyView(page, visible.href, fromHistory ? 'history' : 'push', true, true);
             }
         } catch (error) {
@@ -743,9 +776,10 @@
                     fields.set('opml', btoa(binary));
                 }
                 // Named controls can shadow form.action; use the route read from the attribute.
-                const response = await fetch(action, { method: 'POST', body: fields });
+                const response = await fetch(action, { method: 'POST', body: fields, headers: visitHeaders() });
                 const page = await pageFrom(response);
                 if (entries === view && !navigation) {
+                    acceptVisitCount(response);
                     const nextUrl = new URL(response.url);
                     // A receipt or pause toggle is not a new browser history entry.
                     const mode = action === '/group' || action === '/rss-source' ? 'push' : 'preserve';
@@ -1072,6 +1106,7 @@
             more.textContent = expanded ? 'Show fewer feeds' : `${zeroUnread} more ${zeroUnread === 1 ? 'feed' : 'feeds'}`;
         }
         syncSidebarPins();
+        showVisitCount();
     }
 
     showAll.closest('label').hidden = false;
@@ -1222,8 +1257,9 @@
         const fields = new URLSearchParams(new FormData(form));
         fields.set('inline', '1');
         fields.set('mark', read ? 'read' : 'unread');
-        const response = await fetch(form.action, { method: 'POST', body: fields });
+        const response = await fetch(form.action, { method: 'POST', body: fields, headers: visitHeaders() });
         if (response.status !== 204) throw new Error(await response.text() || 'Could not update this post.');
+        acceptVisitCount(response);
         updateArticleState(row, read, row.dataset.marked === '1');
     }
 
@@ -1276,7 +1312,7 @@
         button.setAttribute('aria-pressed', String(read));
         button.title = marked ? 'Marked articles stay unread' : read ? 'Mark unread' : 'Mark read';
         button.disabled = marked;
-        if (!delta) return;
+        if (!delta) { showVisitCount(); return; }
         for (const feed of document.querySelectorAll('.feed[data-feed]')) {
             if (feed.dataset.feed && feed.dataset.feed !== row.dataset.source) continue;
             // A post contributes once to the total and once to each folder containing its feed.
@@ -1293,9 +1329,10 @@
     async function changeMark(row, action) {
         const fields = new URLSearchParams(new FormData(row.querySelector('form[action="/read"]')));
         fields.set('action', action);
-        const response = await fetch('/mark-article', { method: 'POST', body: fields });
+        const response = await fetch('/mark-article', { method: 'POST', body: fields, headers: visitHeaders() });
         if (!response.ok) throw new Error(await response.text() || 'Could not update the mark.');
         const state = await response.json();
+        acceptVisitCount(response);
         updateArticleState(row, Boolean(state.read), Boolean(state.marked));
     }
 

@@ -919,6 +919,15 @@ internal sealed class Store : IDisposable
         }
     }
 
+    public long ReadSince(string source, DateTimeOffset since, ArticleFilter dates)
+    {
+        // Use the saved read time so bulk actions and Undo count even for articles outside the page.
+        // Match the date range and search, independently of the read/unread visibility checkboxes.
+        return long.Parse(Query("SELECT COUNT(*) FROM posts WHERE source=? AND read_at>?" + PublicationFilter + SearchFilter,
+            source, Stamp(since), dates.StartUtc, dates.StartUtc, dates.EndUtc, dates.EndUtc, dates.Search, dates.Search, dates.Search)[0][0],
+            CultureInfo.InvariantCulture);
+    }
+
     public string[] UpdateMark(string id, bool opened, bool toggle = false)
     {
         lock (gate)
