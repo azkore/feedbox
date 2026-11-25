@@ -25,7 +25,12 @@ internal static class ArticleBody
         "p", "ul", "ol", "li", "blockquote", "pre", "code", "strong", "em", "b", "i", "del", "s"
     };
 
-    public static bool TryAppend(StringBuilder output, string content)
+    private static readonly HashSet<string> PreviewBlocks = new HashSet<string>
+    {
+        "p", "ul", "ol", "blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6"
+    };
+
+    public static bool TryAppend(StringBuilder output, string content, Uri redditPermalink = null)
     {
         if (string.IsNullOrEmpty(content) || content.Length > 100000) return false;
         Body body;
@@ -33,6 +38,9 @@ internal static class ArticleBody
         catch (ArgumentException) { return false; }
         catch (InvalidOperationException) { return false; }
         if (body == null || body.nodes == null) return false;
+
+        // Repair previously saved listing previews when read, without rewriting the archive.
+        if (redditPermalink != null) UnwrapPreview(body.nodes, redditPermalink);
 
         // Generate from fixed tags. Treat even locally stored data as untrusted.
         var html = new StringBuilder();
@@ -42,6 +50,28 @@ internal static class ArticleBody
         if (body.truncated) output.Append("<p class=continued>Continues on the original page.</p>");
         output.Append("</div>");
         return true;
+    }
+
+    private static void UnwrapPreview(Node[] nodes, Uri permalink)
+    {
+        // A prose link within a paragraph, or beside other body content, is not a preview wrapper.
+        Node wrapper = null;
+        foreach (var node in nodes)
+        {
+            if (node == null || node.tag == "text" && string.IsNullOrWhiteSpace(node.text)) continue;
+            if (wrapper != null || node.tag != "a") return;
+            wrapper = node;
+        }
+        Uri target;
+        if (wrapper == null || wrapper.children == null || !Uri.TryCreate(wrapper.href, UriKind.Absolute, out target)
+            || target.AbsoluteUri != permalink.AbsoluteUri) return;
+        foreach (var child in wrapper.children)
+        {
+            if (child == null || !PreviewBlocks.Contains(child.tag)) continue;
+            // Render an inert container by retaining its children and dropping only the link tag.
+            wrapper.tag = null;
+            return;
+        }
     }
 
     private static void Render(StringBuilder html, Node node, int depth)

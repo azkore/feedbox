@@ -40,5 +40,12 @@ function extractArticleBody(root, base) {
 
     if (!root) return '';
     const nodes = walk(root, 0, false);
+    const body = nodes.filter(node => node.tag !== 'text' || node.text.trim());
+    const wrapper = body[0];
+    // Reddit makes the entire listing preview clickable. Keep its contents, not that navigation link.
+    if (body.length === 1 && wrapper.tag === 'a' && wrapper.href === base
+        && wrapper.children.some(node => /^(?:p|ul|ol|blockquote|pre|h[1-6])$/.test(node.tag))) {
+        nodes.splice(nodes.indexOf(wrapper), 1, ...wrapper.children);
+    }
     return nodes.length ? JSON.stringify({ nodes, truncated }) : '';
 }

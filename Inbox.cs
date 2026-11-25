@@ -674,7 +674,8 @@ internal sealed class Inbox : IDisposable
                 .Append(marked ? "true title='Unmark article'" : "false title='Mark article'")
                 .Append("><span aria-hidden=true>&#x1F516;&#xFE0E;</span></button></div><h3>");
             Uri original;
-            if (TryWebUrl(post[3], out original))
+            var hasOriginal = TryWebUrl(post[3], out original);
+            if (hasOriginal)
                 html.Append("<a class=original target=_blank rel=noopener href='").Append(E(original.AbsoluteUri)).Append("'>").Append(E(post[2])).Append("</a>");
             else html.Append("<strong>").Append(E(post[2])).Append("</strong>");
             html.Append("</h3><small>").Append(E(byName.ContainsKey(post[1]) ? byName[post[1]][3] : post[1]));
@@ -685,7 +686,8 @@ internal sealed class Inbox : IDisposable
             if (IsRssKey(post[1]) && post[9] == "1")
                 html.Append("<iframe class=rss-body title='Article body' loading=lazy sandbox='allow-same-origin allow-popups allow-popups-to-escape-sandbox' src='/rss-body?id=")
                     .Append(E(post[0])).Append("'></iframe>");
-            else if (!ArticleBody.TryAppend(html, post[9]) && post[7] != "") AppendContext(html, post[7]);
+            else if (!ArticleBody.TryAppend(html, post[9], hasOriginal && post[0].StartsWith("t3_", StringComparison.Ordinal) ? original : null)
+                && post[7] != "") AppendContext(html, post[7]);
             Uri image;
             if (Uri.TryCreate(post[8], UriKind.Absolute, out image) && image.Scheme == Uri.UriSchemeHttps && (image.Host == "i.redd.it" || image.Host == "preview.redd.it" || image.Host == "external-preview.redd.it"))
                 html.Append("<img class=preview loading=lazy referrerpolicy=no-referrer alt='Post preview' src='").Append(E(image.AbsoluteUri)).Append("'>");
