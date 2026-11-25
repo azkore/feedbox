@@ -435,7 +435,7 @@
 
     function showError(error) { status.textContent = error.message || 'Could not update the inbox.'; }
 
-    async function navigate(href, fromHistory = false) {
+    async function navigate(href, { fromHistory = false, focusHeading = true } = {}) {
         // Only the last requested view may replace the document regions.
         if (busy && !fromHistory) return;
         navigation?.abort();
@@ -453,7 +453,7 @@
                 const visible = new URL(href, location.href);
                 visible.searchParams.delete('at');
                 acceptVisitCount(response);
-                applyView(page, visible.href, fromHistory ? 'history' : 'push', true, true);
+                applyView(page, visible.href, fromHistory ? 'history' : 'push', focusHeading, true);
             }
         } catch (error) {
             if (!request.signal.aborted) {
@@ -465,7 +465,7 @@
         }
     }
 
-    window.addEventListener('popstate', () => navigate(location.href, true));
+    window.addEventListener('popstate', () => navigate(location.href, { fromHistory: true }));
 
     let menuButton = null;
     function closeFeedMenu() {
@@ -1228,7 +1228,8 @@
         while (index >= 0 && index < all.length) {
             const link = all[index];
             if (!link.closest('[hidden]') && (!unread || hasMatchingArticles(link))) {
-                navigate(link.href);
+                // Keep the reading shortcut from moving keyboard focus to the new heading.
+                navigate(link.href, { focusHeading: false });
                 return;
             }
             index += direction;
