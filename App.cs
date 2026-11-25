@@ -107,7 +107,11 @@ internal sealed class App : Form
                 ready = true;
                 await Task.WhenAll(Check(false), CheckRss());
             }
-            catch (Exception ex) { tray.ShowBalloonTip(6000, "feedbox", "WebView2 could not start: " + ex.GetType().Name, ToolTipIcon.Error); }
+            catch (Exception ex)
+            {
+                RecordTrayError("Collector startup", ex);
+                tray.ShowBalloonTip(6000, "feedbox", "WebView2 could not start: " + ex.GetType().Name, ToolTipIcon.Error);
+            }
         };
         FormClosing += (s, e) =>
         {
@@ -120,6 +124,22 @@ internal sealed class App : Form
     {
         try { store.ExpirePrunedActivity(DateTimeOffset.UtcNow); }
         catch (InvalidOperationException error) { Debug.WriteLine(error.Message); } // A busy archive can wait for the next tick.
+    }
+
+    private static void RecordTrayError(string operation, Exception error)
+    {
+        // Save the last trace locally without exception messages, which can contain request URLs.
+        var directory = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (directory.Length == 0) return;
+        try
+        {
+            directory = Path.Combine(directory, "feedbox");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, "last-tray-error.txt"), DateTimeOffset.UtcNow.ToString("o")
+                + Environment.NewLine + operation + ": " + error.GetType().FullName + Environment.NewLine + new StackTrace(error, false));
+        }
+        catch (IOException) { /* Logging must not hide the original tray error. */ }
+        catch (UnauthorizedAccessException) { /* The local log folder may not be writable. */ }
     }
 
     private void SignIn()
@@ -388,6 +408,7 @@ internal sealed class App : Form
         catch (Exception ex)
         {
             // Leave all stored cursors intact after an unexpected local failure.
+            RecordTrayError("Reddit check", ex);
             tray.ShowBalloonTip(6000, "feedbox", "Collection failed: " + ex.GetType().Name, ToolTipIcon.Warning);
             return "Collection failed: " + ex.GetType().Name;
         }
